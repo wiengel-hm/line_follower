@@ -358,3 +358,18 @@ def display_distances(image, distance_dict):
     cv2.addWeighted(overlay, alpha, output, 1 - alpha, 0, output)
 
     return output
+
+def is_visible(predictions, class_id):
+    """
+    Check if a specific class ID is present in the prediction results.
+    """
+    if len(predictions) < 1:
+        return False
+
+    p = predictions[0]
+
+
+    bboxs = p.boxes
+    ids = bboxs.cls.cpu().numpy()        # Class IDs e.g., center(0), stop(1)
+    
+    return class_id in ids
