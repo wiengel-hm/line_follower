@@ -23,7 +23,8 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'line_tracker = line_follower.line_tracker:main'
+            'line_tracker = line_follower.line_tracker:main',
+            'run_pilotnet = line_follower.run_pilotnet:main',
         ],
     },
 )
