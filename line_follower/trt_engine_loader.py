@@ -8,7 +8,7 @@ from functools import wraps
 from glob import glob
 import cv2
 
-# trtexec --onnx=model.onnx --saveEngine=model.trt
+# trtexec --onnx=pilotnet.onnx --saveEngine=pilotnet.trt
 
 
 def time_tracker(func):
@@ -82,7 +82,7 @@ class TensorRTModel:
 
         # Allocate host and device memory for inputs and outputs
         self.inputs, self.outputs, self.bindings, self.stream = self.allocate_buffers()
-
+        
         self.warmup_model()
 
     @property
@@ -90,6 +90,7 @@ class TensorRTModel:
         # Get input shape (excluding batch dimension)
         _, h, w, c = self.input_shape
         return np.random.rand(h, w, c).astype(self.input_dtype)
+
     
     @time_tracker
     def warmup_model(self, warmup_rounds: int = 100):
@@ -256,19 +257,55 @@ class UNet(TensorRTModel):
 
         return mask_resized
 
+class PilotNet(TensorRTModel):
+    def __init__(self, engine_path):
+        super().__init__(engine_path)
 
+
+    def preprocess_image(self, image):
+        in_h, in_w, _ = self.input_shape[1:]
+        return self.preprocess_image_(image, ymin=120, in_w=in_w, in_h=in_h)
+    
+    @staticmethod
+    def parse_prediction(prediction):
+        return float(prediction[0])
+    
+    @staticmethod
+    def preprocess_image_(image, ymin = 120, in_w = 240, in_h = 240):
+        # Crop the top part of the image (remove sky, buildings, etc.)
+        img_cropped = image[ymin:]
+
+        # Convert to grayscale (1 channel instead of 3)
+        gray = cv2.cvtColor(img_cropped, cv2.COLOR_RGB2GRAY)
+
+        # Resize to model input size
+        resized = cv2.resize(gray, (in_h, in_w))
+
+        # Normalize pixel values to range [0, 1]
+        norm = resized.astype(np.float32) / 255.0
+
+        return np.expand_dims(norm, axis = -1)
+
+    @property
+    def sample_input(self):
+        # Get input shape (excluding batch dimension)
+        _, h, w, c = self.input_shape
+        return np.random.rand(360, w, 3).astype(self.input_dtype) # RGB
+
+    
 # Example usage
 if __name__ == "__main__":
     # Path to the TensorRT engine file
-    engine_path = "/mxck2_ws/src/line_follower/models/unet.trt"
+    # engine_path = "/mxck2_ws/src/line_follower/models/unet.trt"
+    engine_path = "/mxck2_ws/src/line_follower/models/pilotnet.trt"
 
     # Initialize the TensorRT model
-    model = UNet(engine_path)
+    # model = UNet(engine_path)
+    model = PilotNet(engine_path)
 
     # # Generate a batch of random images for inference
-    num_images = 5
+    num_images = 500
     
-
     start_time = time.time()
     for _ in range(num_images):
         results = model.predict(model.sample_input)
@@ -285,10 +322,12 @@ if __name__ == "__main__":
     # Load all images matching the pattern 'sample*.png'
     images = [cv2.imread(path) for path in glob(im_dir + '/sample*.png')]
 
+    steering_angle = model.predict(images[1])
+    print(f"{steering_angle=}")
 
     # Run inference on the first image
-    mask = model.predict(images[1])
+    # # mask = model.predict(images[1])
 
-    # Save the predicted mask as a color image
-    rgb_mask = cv2.cvtColor((mask * 255.0).astype(np.uint8), cv2.COLOR_GRAY2RGB)
-    cv2.imwrite(im_dir + '/result01.png', rgb_mask)
+    # # # Save the predicted mask as a color image
+    # # rgb_mask = cv2.cvtColor((mask * 255.0).astype(np.uint8), cv2.COLOR_GRAY2RGB)
+    # # cv2.imwrite(im_dir + '/result01.png', rgb_mask)
