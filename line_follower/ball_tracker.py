@@ -1,7 +1,7 @@
 import os
 import cv2
 import numpy as np
-from yolo_onnx_runner import YOLO
+from ultralytics import YOLO
 
 import rclpy
 from rclpy.node import Node
