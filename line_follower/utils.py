@@ -373,3 +373,5 @@ def is_visible(predictions, class_id):
     ids = bboxs.cls.cpu().numpy()        # Class IDs e.g., center(0), stop(1)
     
     return class_id in ids
+
+
