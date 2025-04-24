@@ -1,6 +1,6 @@
 rosbag2_bagfile_information:
   version: 5
-  storage_identifier: mcap
+  storage_identifier: sqlite3
   duration:
     nanoseconds: 26869809149
   starting_time:
@@ -22,9 +22,9 @@ rosbag2_bagfile_information:
   compression_format: ""
   compression_mode: ""
   relative_file_paths:
-    - line_follow_rgb_mcap_0.mcap
+    - line_follow_rgb_0.db3
   files:
-    - path: line_follow_rgb_mcap_0.mcap
+    - path: line_follow_rgb_0.db3
       starting_time:
         nanoseconds_since_epoch: 1742238875396511650
       duration:
