@@ -1,0 +1,32 @@
+# Vehicle Coordinate Frame Definition
+# x-forward, y-left, z-up
+# 'base_link' is the reference origin located at the center of the rear axle
+frame_id: 'base_link'
+
+# Reference Point: y = 1.27 meters forward from the rear axle, x = 0 aligned laterally with the axle.
+ref_point_y: 0  # Lateral offset
+ref_point_x: 0.127  # Longitudinal offset
+
+# Rectangle Width: 0.9 meters wide, aids in converting pixel measurements to meters for image processing.
+# The center of the bottom side is provided; thus, corners are calculated from this center reference.
+rectangle_width: 0.9
+
+# Rectangle points: Defines the corners of a 0.9m x 0.9m square, forward 0.91m from the origin. Given only the center
+# of the bottom side, the width is used to calculate corners left and right from this center.
+# Points ordered [Top-right, Top-left, Bottom-left, Bottom-right].
+rectangle_points: '[[2.17, 0.45], [2.17, -0.45], [1.27, -0.45], [1.27, 0.45]]'
+
+# Pixel coordinates
+rectangle_pixels: '[[224,229], [477,227], [660,290], [88,290]]'
+
+# Homography matrix: Transforms from pixel coordinates to plane coordinates in the 'base_link' frame,
+# facilitating accurate spatial representation in images.
+# H, _ = cv2.findHomography(rectangle_pixels, rectangle_points)
+homography: '[[-0.00009855, -0.00299854,  0.13116352],
+              [ 0.0009605,  -0.00023464, -0.28119224],
+              [-0.0000776,  -0.0054532,   1.        ]]'
+              
+
+image_width: 640
+image_height: 360
+

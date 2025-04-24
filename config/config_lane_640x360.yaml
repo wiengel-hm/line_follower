@@ -1,0 +1,11 @@
+/**:
+  ros__parameters:
+    win_h: 20            # Height of the window in pixels
+    win_w: 90            # Width of the window in pixels
+    win_x: 310           # X-coordinate for the center of the search window for the left lane line
+    win_y: 280           # X-coordinate for the center of the search window for the right lane line
+    image_w: 640         # Width of the image
+    image_h: 360         # Height of the image
+    canny_min: 80        # Minimum threshold for Canny edge detection
+    canny_max: 180       # Maximum threshold for Canny edge detection
+    k: 5                 # Kernel size for filters
