@@ -20,6 +20,10 @@ class LineFollower(Node):
     def __init__(self, filepath, debug = False):
         super().__init__('line_tracker')
 
+        # Define a message to send when the line tracker has lost track
+        self.lost_msg = PoseStamped()
+        self.lost_msg.pose.position.x = pose.pose.position.y = pose.pose.position.z = float('nan')
+
         # Plot the result if debug is True
         self.debug = debug
 
@@ -96,6 +100,7 @@ class LineFollower(Node):
             self.publisher.publish(pose_msg)
 
         else:
+            self.publisher.publish(self.lost_msg)
             self.get_logger().info("Lost track!")
 
     def preprocess_image(self, image):
