@@ -22,7 +22,7 @@ class LineFollower(Node):
 
         # Define a message to send when the line tracker has lost track
         self.lost_msg = PoseStamped()
-        self.lost_msg.pose.position.x = pose.pose.position.y = pose.pose.position.z = float('nan')
+        self.lost_msg.pose.position.x = self.lost_msg.pose.position.y = self.lost_msg.pose.position.z = float('nan')
 
         # Plot the result if debug is True
         self.debug = debug
