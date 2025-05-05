@@ -104,10 +104,38 @@ class LineFollower(Node):
             self.get_logger().info("Lost track!")
 
     def preprocess_image(self, image):
-        return cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+        # Convert to grayscale
+        im_gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+        # Apply Gaussian blur to the grayscale image
+        im_blur = cv2.GaussianBlur(im_gray, self.kernel, 0)
+
+        # Apply Canny edge detection to the preprocessed image
+        im_canny = cv2.Canny(im_blur, self.canny_min, self.canny_max) # [0 or 255]
+        
+        return im_canny
 
     def find_center(self, win_x, im_canny):
-        return False, win_x
+        # Adjust window center by detecting lane line pixels in the image patch
+        # Success means pixels were found and a new center is calculated
+
+        x1, x2, y1, y2 = self.get_corners(win_x)
+
+        # Extract the relevant image patch and identify non-zero pixels (lane line pixels)
+        patch = im_canny[y1:y2, x1:x2]
+        _, xs = np.nonzero(patch)
+
+
+        # Check if any lane line pixels are detected
+        # If not, return False along with the current center
+        if len(xs) == 0:
+            return False, win_x
+
+        # Calculate the new center based on the mean of the detected pixels
+        updated_center = int(x1 + np.mean(xs))
+
+        return True, updated_center
 
     def declare_params(self):
 
