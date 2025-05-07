@@ -86,6 +86,9 @@ def parse_predictions(predictions, class_ids = [0]):
     - numpy.ndarray or None: The final mask image resized to the original input size, or None if no masks were found.
     """
 
+    if len(predictions) == 0:
+        return False, None
+
     # We only process one image at a time (batch size = 1)
     p = predictions[0]
 
@@ -94,8 +97,6 @@ def parse_predictions(predictions, class_ids = [0]):
     confidences = bboxs.conf.cpu().numpy() # Confidence scores (not used here)
 
     masks = p.masks
-    if masks is None:
-        return False, None
 
     # Create a mask for detections that match our target classes (we're only interested in the center line)
     cls_mask = np.isin(ids, class_ids)
