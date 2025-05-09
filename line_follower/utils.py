@@ -138,4 +138,32 @@ def get_base(mask, N = 100):
 
     return cx, cy
 
+def draw_circle(image, x, y, radius=5, color=(0, 255, 0), thickness=-1):
+    center = (int(x), int(y))  # Create center tuple from x and y
+    cv2.circle(image, center, radius, color, thickness)
+    return image
 
+def detect_bbox_center(predictions, target_id):
+    # Check if there are any predictions
+    if len(predictions) == 0:
+        return False, None, None
+
+    p = predictions[0].cpu()  # Get the first prediction (move to CPU)
+    all_boxes = p.boxes  # Access the bounding boxes
+    ids = all_boxes.cls.numpy()  # Class IDs for each detected object
+    confidences = all_boxes.conf.numpy()  # Confidence scores for each detection
+
+    # Check if the target class ID is present in the predictions
+    if target_id not in ids:
+        return False, None, None
+
+    # Filter the boxes with the target ID
+    boxes = all_boxes[ids == target_id]
+
+    # Extract the center and size (xywh) of the first box
+    center_x, center_y, w, h = boxes.xywh[0].numpy()
+
+    # Calculate the bottom center Y-coordinate
+    bottom_y = center_y + h // 2  # Use + instead of - to get the bottom y
+
+    return True, center_x, bottom_y  # Return the bottom center coordinates
