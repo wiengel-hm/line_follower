@@ -9,12 +9,12 @@ from ultralytics import YOLO
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data  # Quality of Service settings for real-time data
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import Image, CompressedImage
 from geometry_msgs.msg import PoseStamped
 from ament_index_python.packages import get_package_share_directory, get_package_prefix
 
 # Project-Specific Imports
-from line_follower.utils import to_surface_coordinates, read_transform_config, parse_predictions, get_base
+from line_follower.utils import to_surface_coordinates, read_transform_config, parse_predictions, get_base, detect_bbox_center
 from ros2_numpy import image_to_np, np_to_image, np_to_pose, np_to_compressedimage
 
 class LineFollower(Node):
@@ -23,7 +23,7 @@ class LineFollower(Node):
 
         # Define a message to send when the line tracker has lost track
         self.stop_msg = PoseStamped()
-        self.stop_msg.pose.position.x = self.lost_msg.pose.position.y = self.lost_msg.pose.position.z = float('nan')
+        self.stop_msg.pose.position.x = self.stop_msg.pose.position.y = self.stop_msg.pose.position.z = float('nan')
 
         for path in [model_path, config_path]:
             if not os.path.exists(path):
@@ -48,15 +48,23 @@ class LineFollower(Node):
 
         # Publisher to send calculated waypoints
         self.publisher = self.create_publisher(PoseStamped, '/waypoint', qos_profile)
+
+        # Publisher to send 3d object positions
+        self.obj_publisher = self.create_publisher(PoseStamped, '/object', qos_profile)
         
         # Publisher to send processed result images for visualization
-        self.im_publisher = self.create_publisher(Image, '/result', qos_profile)
+        self.im_publisher = self.create_publisher(CompressedImage, '/result', qos_profile)
 
         # Returns a function that converts pixel coordinates to surface coordinates using a fixed matrix 'H'
         self.to_surface_coordinates = lambda u, v: to_surface_coordinates(u, v, H)
 
         # Load the custom trained YOLO model
         self.model = YOLO(model_path)
+
+        # Map class IDs to labels and labels to IDs
+        id2label = self.model.names
+        targets = ['stop', 'speed_3mph', 'speed_2mph']
+        self.id2target = {id: lbl for id, lbl in id2label.items() if lbl in targets}
 
         # Log an informational message indicating that the Line Tracker Node has started
         self.get_logger().info("Line Tracker Node started. Custom YOLO model loaded successfully.")
@@ -101,6 +109,21 @@ class LineFollower(Node):
             self.publisher.publish(self.stop_msg)
             self.get_logger().info("Lost track!")
 
+        for id, lbl in self.id2target.items():
+            detected, u, v = detect_bbox_center(predictions, id)
+
+            if detected:
+
+                # Transform from pixel to world coordinates
+                x, y = self.to_surface_coordinates(u, v)
+
+                # Publish object as Pose message
+                pose_msg = np_to_pose(np.array([x, y, id]), 0.0, timestamp=timestamp)
+            else:
+                pose_msg = self.stop_msg # Attention: this creates a reference — use deepcopy() if you want self.stop_msg to remain unchanged
+                pose_msg.pose.position.z = float(id)
+
+            self.obj_publisher.publish(pose_msg)
 
 
 

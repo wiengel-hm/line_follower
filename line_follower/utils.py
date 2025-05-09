@@ -166,4 +166,4 @@ def detect_bbox_center(predictions, target_id):
     # Calculate the bottom center Y-coordinate
     bottom_y = center_y + h // 2  # Use + instead of - to get the bottom y
 
-    return True, center_x, bottom_y  # Return the bottom center coordinates
+    return True, float(center_x), float(bottom_y)  # Return the bottom center coordinates
