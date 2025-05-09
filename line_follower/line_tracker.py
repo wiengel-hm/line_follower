@@ -25,9 +25,9 @@ class LineFollower(Node):
         self.stop_msg = PoseStamped()
         self.stop_msg.pose.position.x = self.lost_msg.pose.position.y = self.lost_msg.pose.position.z = float('nan')
 
-        for path in [model_path, config_path]
-        if not os.path.exists(path):
-            raise FileNotFoundError(f"The file at '{path}' was not found.")
+        for path in [model_path, config_path]:
+            if not os.path.exists(path):
+                raise FileNotFoundError(f"The file at '{path}' was not found.")
 
 
         # Read the homography matrix H from the given config file.
