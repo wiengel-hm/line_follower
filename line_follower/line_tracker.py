@@ -129,8 +129,7 @@ class LineFollower(Node):
 
         # Check if any lane line pixels are detected
         # If not, return False along with the current center
-        if len(xs) == 0:
-            return False, win_x
+        if len(xs) == 0: return False, win_x
 
         # Calculate the new center based on the mean of the detected pixels
         updated_center = int(x1 + np.mean(xs))
