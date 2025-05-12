@@ -47,19 +47,19 @@ class LineFollower(Node):
         )
 
         # Publisher to send calculated waypoints
-        self.publisher = self.create_publisher(PoseStamped, '/waypoint', qos_profile)
+        self.publisher = self.create_publisher(PoseStamped, 'waypoint', qos_profile)
 
         # Publisher to send 3d object positions
-        self.obj_publisher = self.create_publisher(PoseStamped, '/object', qos_profile)
+        self.obj_publisher = self.create_publisher(PoseStamped, 'object', qos_profile)
         
         # Publisher to send processed result images for visualization
-        self.im_publisher = self.create_publisher(CompressedImage, '/result', qos_profile)
+        self.im_publisher = self.create_publisher(CompressedImage, 'result', qos_profile)
 
         # Returns a function that converts pixel coordinates to surface coordinates using a fixed matrix 'H'
         self.to_surface_coordinates = lambda u, v: to_surface_coordinates(u, v, H)
 
         # Load the custom trained YOLO model
-        self.model = YOLO(model_path)
+        self.model = self.load_model(model_path)
 
         # Map class IDs to labels and labels to IDs
         id2label = self.model.names
@@ -69,6 +69,18 @@ class LineFollower(Node):
         # Log an informational message indicating that the Line Tracker Node has started
         self.get_logger().info("Line Tracker Node started. Custom YOLO model loaded successfully.")
 
+    def load_model(self, filepath):
+        model = YOLO(filepath)
+
+        self.imgsz = model.args['imgsz'] # Get the image size (imgsz) the loaded model was trained on.
+
+        # Init model
+        print("Initializing the model with a dummy input...")
+        im = np.zeros((self.imgsz, self.imgsz, 3)) # dummy image
+        _ = model.predict(im)  
+        print("Model initialization complete.")
+
+        return model
 
     def image_callback(self, msg):
 
