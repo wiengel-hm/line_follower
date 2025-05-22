@@ -3,7 +3,7 @@ import os
 import cv2
 import yaml
 import numpy as np
-from ultralytics import YOLO
+from line_follower.trt_engine_loader import UNet
 
 # ROS Imports
 import rclpy
@@ -48,9 +48,6 @@ class LineFollower(Node):
 
         # Publisher to send calculated waypoints
         self.publisher = self.create_publisher(PoseStamped, 'waypoint', qos_profile)
-
-        # Publisher to send 3d object positions
-        self.obj_publisher = self.create_publisher(PoseStamped, 'object', qos_profile)
         
         # Publisher to send processed result images for visualization
         self.im_publisher = self.create_publisher(CompressedImage, 'result', qos_profile)
@@ -58,30 +55,25 @@ class LineFollower(Node):
         # Returns a function that converts pixel coordinates to surface coordinates using a fixed matrix 'H'
         self.to_surface_coordinates = lambda u, v: to_surface_coordinates(u, v, H)
 
-        # Load the custom trained YOLO model
-        self.model = self.load_model(model_path)
+        # Initialize the TensorRT model
+        self.model = UNet(model_path)
 
-        # Map class IDs to labels and labels to IDs
-        id2label = self.model.names
-        targets = ['stop', 'speed_3mph', 'speed_2mph']
-        self.id2target = {id: lbl for id, lbl in id2label.items() if lbl in targets}
+        self.min_pixels = 100
 
         # Log an informational message indicating that the Line Tracker Node has started
-        self.get_logger().info("Line Tracker Node started. Custom YOLO model loaded successfully.")
+        self.get_logger().info("Line Tracker Node started. Custom UNet trt engine loaded successfully.")
 
-    def load_model(self, filepath):
-        model = YOLO(filepath)
+    @staticmethod
+    def overlay_mask(image, mask, color = (0, 0, 255), alpha = 0.5):
 
-        self.imgsz = model.args['imgsz'] # Get the image size (imgsz) the loaded model was trained on.
+        color = np.array(color, dtype=np.uint8)  # red
 
-        # Init model
-        print("Initializing the model with a dummy input...")
-        im = np.zeros((self.imgsz, self.imgsz, 3)) # dummy image
-        _ = model.predict(im)  
-        print("Model initialization complete.")
+        # Apply overlay where mask == 1
+        overlay = image.copy()
+        overlay[mask == 1] = (color * alpha + overlay[mask == 1] * (1 - alpha)).astype(np.uint8)
 
-        return model
-
+        return overlay
+    
     def image_callback(self, msg):
 
         # Convert ROS image to numpy format
@@ -89,21 +81,18 @@ class LineFollower(Node):
         image, timestamp_unix = image_to_np(msg)
 
 
-        # Run YOLO inference
-        predictions = self.model(image, verbose = False)
+        # Run UNet inference
+        mask = self.model.predict(image)
 
-        # Draw results on the image
-        plot = predictions[0].plot()
+        overlay = self.overlay_mask(image, mask)
 
         # Convert back to ROS2 Image and publish
-        im_msg = np_to_compressedimage(cv2.cvtColor(plot, cv2.COLOR_BGR2RGB))
+        im_msg = np_to_compressedimage(overlay)
 
         # Publish predictions
         self.im_publisher.publish(im_msg)
 
-        success, mask = parse_predictions(predictions)
-
-        if success:
+        if np.sum(mask) > self.min_pixels:
             
             cx, cy = get_base(mask)
 
@@ -121,23 +110,6 @@ class LineFollower(Node):
             self.publisher.publish(self.stop_msg)
             self.get_logger().info("Lost track!")
 
-        for id, lbl in self.id2target.items():
-            detected, u, v = detect_bbox_center(predictions, id)
-
-            if detected:
-
-                # Transform from pixel to world coordinates
-                x, y = self.to_surface_coordinates(u, v)
-
-                # Publish object as Pose message
-                pose_msg = np_to_pose(np.array([x, y, id]), 0.0, timestamp=timestamp)
-            else:
-                pose_msg = self.stop_msg # Attention: this creates a reference — use deepcopy() if you want self.stop_msg to remain unchanged
-                pose_msg.pose.position.z = float(id)
-
-            self.obj_publisher.publish(pose_msg)
-
-
 
 def main(args=None):
 
@@ -146,7 +118,7 @@ def main(args=None):
 
     # Path to your custom trained YOLO model
     pkg_path = get_package_prefix('line_follower').replace('install', 'src') # /mxck2_ws/install/line_follower → /mxck2_ws/src/line_follower
-    model_path = pkg_path + '/models/best.pt'
+    model_path = pkg_path + '/models/unet.trt'
             
     rclpy.init(args=args)
     node = LineFollower(model_path, config_path)
