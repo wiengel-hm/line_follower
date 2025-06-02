@@ -230,3 +230,68 @@ def get_onnx_boxes(predictions, objects_3d):
       return False, None
     else:
       return True, detections
+
+def pixels_in_box(pixels, corners):
+    """
+    Returns a boolean mask for which pixels fall inside a given 2D bounding box.
+
+    Args:
+        pixels (np.ndarray): Nx2 array of [u, v] image coordinates.
+        corners (list): [x1, y1, x2, y2] bounding box corners.
+
+    Returns:
+        np.ndarray: Boolean mask of shape (N,) with True for pixels inside the box.
+    """
+    u, v = pixels.T
+    x1, y1, x2, y2 = corners
+
+    xmin, xmax = sorted([x1, x2])
+    ymin, ymax = sorted([y1, y2])
+
+    return (u >= xmin) & (u <= xmax) & (v >= ymin) & (v <= ymax)
+
+
+def display_distances(image, distance_dict):
+    """
+    Draws all label: distance entries in the top-left corner of the image
+    with a single white semi-transparent background box.
+
+    Args:
+        image (np.ndarray): The input BGR image.
+        distance_dict (dict): Dictionary with {label: distance} entries.
+
+    Returns:
+        np.ndarray: Annotated image.
+    """
+    overlay = image.copy()
+    output = image.copy()
+    
+    x, y = 10, 20
+    dy = 20  # Line spacing
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = 0.5  # Smaller font
+    text_color = (0, 0, 0)  # Black text
+    box_color = (255, 255, 255)  # White background
+    thickness = 1
+    alpha = 0.6  # Transparency
+
+    # Prepare all lines and calculate max text width
+    lines = [f"{label}: {dist:.2f} m" for label, dist in distance_dict.items()]
+    text_sizes = [cv2.getTextSize(line, font, font_scale, thickness)[0] for line in lines]
+    max_width = max(w for w, h in text_sizes)
+    total_height = dy * len(lines)
+
+    # Draw one background box
+    top_left = (x - 5, y - 15)
+    bottom_right = (x + max_width + 5, y - 15 + total_height)
+    cv2.rectangle(overlay, top_left, bottom_right, box_color, -1)
+
+    # Draw each line of text
+    for i, line in enumerate(lines):
+        line_y = y + i * dy
+        cv2.putText(overlay, line, (x, line_y), font, font_scale, text_color, thickness, cv2.LINE_AA)
+
+    # Blend overlay and original image
+    cv2.addWeighted(overlay, alpha, output, 1 - alpha, 0, output)
+
+    return output

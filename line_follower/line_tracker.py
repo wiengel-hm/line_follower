@@ -14,23 +14,20 @@ from geometry_msgs.msg import PoseStamped
 from ament_index_python.packages import get_package_share_directory, get_package_prefix
 
 # Project-Specific Imports
-from line_follower.utils import to_surface_coordinates, read_transform_config, parse_predictions, get_base, detect_bbox_center, draw_circle, get_onnx_boxes
-from ros2_numpy import image_to_np, np_to_image, np_to_pose, np_to_image, scan_to_np
+from line_follower.utils import (
+    to_surface_coordinates, read_transform_config, parse_predictions,
+    get_base, detect_bbox_center, draw_circle,
+    get_onnx_boxes, pixels_in_box, display_distances
+)
+from ros2_numpy import image_to_np, np_to_image, np_to_image, scan_to_np, to_detection3d_array, to_label_info
 from yolo_onnx_runner import YOLO # pip install git+https://github.com/william-mx/yolo-onnx-runner.git
-from line_follower.conversions import to_detection3d_array, to_label_info
 from line_follower.fusion import LidarToImageProjector
 
 class LineFollower(Node):
     def __init__(self, model_path, config_path):
         super().__init__('line_tracker')
 
-        # Stores the latest 3D LiDAR points in vehicle coordinates (x: forward, y: left, z: up)
-        self.pts = None
-
-        # Define a message to send when the line tracker has lost track
-        self.stop_msg = PoseStamped()
-        self.stop_msg.pose.position.x = self.stop_msg.pose.position.y = self.stop_msg.pose.position.z = float('nan')
-
+        # Check if both the model and config paths exist
         for path in [model_path, config_path]:
             if not os.path.exists(path):
                 raise FileNotFoundError(f"The file at '{path}' was not found.")
@@ -39,12 +36,24 @@ class LineFollower(Node):
         # This matrix defines the transformation from 2D pixel coordinates to 3D world coordinates.
         H = read_transform_config(config_path)
 
+        # Returns a function that converts pixel coordinates to surface coordinates using a fixed matrix 'H'
+        self.to_surface_coordinates = lambda u, v: to_surface_coordinates(u, v, H)
+
         # Define Quality of Service (QoS) for communication
         qos_profile = qos_profile_sensor_data  # Suitable for sensor data
         qos_profile.depth = 1  # Keep only the latest message
 
+
         # Publisher to send out 3D detections
-        self.detection3d_pub = self.create_publisher(Detection3DArray, '/objects_3d', qos_profile)
+        # All detections (e.g., stop signs, waypoints) are published as a Detection3DArray.
+        # Each object is represented as a Detection3D message with a label (e.g., 'center'),
+        # a confidence score (e.g., 0.99), and a 3D pose (x, y, z).
+        # Optionally, it can include orientation and 3D bounding box info.
+        self.detection3d_pub = self.create_publisher(
+            Detection3DArray,
+            '/objects_3d',
+            qos_profile
+        )
 
         # Subscriber to receive camera images
         self.im_subscriber = self.create_subscription(
@@ -55,7 +64,12 @@ class LineFollower(Node):
         )
 
         # Subscriber to receive LiDAR scan data
-        self.scan_subscriber = self.create_subscription(LaserScan, '/scan', self.scan_callback, qos_profile)
+        self.scan_subscriber = self.create_subscription(
+            LaserScan,
+            '/scan',
+            self.scan_callback, 
+            qos_profile
+        )
 
         # QoS profile that ensures the last published message is saved and sent to new subscribers.
         # This is useful for static or infrequently changing data like label maps or calibration info.
@@ -63,7 +77,7 @@ class LineFollower(Node):
         qos_transient.durability = QoSDurabilityPolicy.TRANSIENT_LOCAL
 
         self.label_pub = self.create_publisher(
-            LabelInfo, # {0: 'car', 1: 'ceter', ...}
+            LabelInfo, # {0: 'car', 1: 'center', ...}
             '/label_mapping',
             qos_transient
         )
@@ -71,38 +85,63 @@ class LineFollower(Node):
         # Publisher to send processed result images for visualization
         self.im_publisher = self.create_publisher(Image, '/result', qos_profile)
 
-        # Returns a function that converts pixel coordinates to surface coordinates using a fixed matrix 'H'
-        self.to_surface_coordinates = lambda u, v: to_surface_coordinates(u, v, H)
-
         # Load the custom trained YOLO model
         self.model = YOLO(model_path, conf_thres=0.1)
 
         # Map class IDs to labels and labels to IDs
-        self.id2label = self.model.names
-        self.label2id = {lbl: id for id, lbl in self.id2label.items()}
+        self.id2label = self.model.names # {0: 'car', 1: 'center', ...}
+        self.label2id = {lbl: id for id, lbl in self.id2label.items()} # {'car: 0, 'center': 1, ...}
 
         info_msg = to_label_info(self.id2label) # Convert it to a LabelInfo message
         self.label_pub.publish(info_msg) # Publish it
 
-        # Initialize default detections with all scores set to 0.0 (i.e., not detected)
-        # Format: [label, score, x, y, z]
+        # Initialize default detections with one entry per class the model can detect.
+        # If nothing is visible for a class, it still gets included with a score of 0.0.
+        # So if the model knows 8 classes, this dictionary will always have 8 entries.
+        # Format: {id: [label, score, x, y, z]}
+        # Example:
+        # self.detections = {
+        #     0: ['car', 0.98, 0.0, 0.0, 0.0],
+        #     1: ['center', 0.0, 0.0, 0.0, 0.0], # not detected
+        #     ...
+        # }
         self.detections = {id: [lbl, 0.0, 0.0, 0.0, 0.0] for id, lbl in self.id2label.items()}
 
-        objects_3d = ['car'] # Classes to track 
-        self.objects_3d = {id: lbl for id, lbl in self.id2label.items() if lbl in objects_3d}
+        # Define the classes we want to process based on how we estimate their 3D position.
+        # We use two different techniques for this: 
+        # - Homography (for flat objects on the ground like lane lines)
+        # - Camera-LiDAR fusion (for 3D objects like cars or stop signs)
 
+        # Classes processed using homography.
+        # This only works for flat objects on the track surface, like the center line.
         objects_2d = ['center']
         self.objects_2d = {id: lbl for id, lbl in self.id2label.items() if lbl in objects_2d}
+
+        # Classes processed using camera-LiDAR fusion.
+        # This method is used for tall 3D objects like cars or stop signs.
+        # It uses a projector that transforms the LiDAR point cloud into the camera frame
+        # and projects the 3D points onto the image to estimate object distance and position.
+        # Make sure objects are tall enough — our single-layer LiDAR may miss low objects.
+        objects_3d = ['car']  # Add other 3D objects like 'stop_sign' if needed
+        self.objects_3d = {id: lbl for id, lbl in self.id2label.items() if lbl in objects_3d}
+
+        # Stores the latest 3D LiDAR points in vehicle coordinates (x: forward, y: left, z: up)
+        self.pts = None
+
+        # LiDAR-to-camera projection tool used for camera-LiDAR fusion
+        self.projector = LidarToImageProjector()
 
         # Log an informational message indicating that the Line Tracker Node has started
         self.get_logger().info("Line Tracker Node started. Custom YOLO ONNX model loaded successfully.")
 
-        self.projector = LidarToImageProjector()
-
     def scan_callback(self, msg):
+        # Convert the incoming LiDAR scan message to NumPy format (x, y, intensity)
         xyi, timestamp_unix = scan_to_np(msg)
         x, y, intensity = xyi[:, 0], xyi[:, 1], xyi[:, 2]
-        self.pts = np.column_stack([x, y, np.zeros_like(x)]) # (N, 3)
+
+        # Store the 3D point cloud in vehicle coordinates.
+        # Since we use a 2D LiDAR (single layer), all z-values are set to 0.
+        self.pts = np.column_stack([x, y, np.zeros_like(x)])  # Shape: (N, 3)
 
     def image_callback(self, msg):
 
@@ -117,11 +156,16 @@ class LineFollower(Node):
         # Run YOLO inference
         predictions = self.model(image)
 
+        # If there are no predictions, skip processing this frame
+        if len(predictions) == 0:
+            return
 
-        # === Step 1: 3D Object Detection and Fusion ===
-        # - Extract object predictions from the model output
-        # - Fuse predictions with depth from camera-LiDAR projection
-        # - Add all detections to a Detection3DArray for publishing
+        # Draw results on the image
+        plot = predictions[0].plot()
+
+        """ STEP 1: 3D Object Detection (Camera-LiDAR Fusion)
+        Detect tall objects like cars or signs using LiDAR projected into the camera image.
+        Good for 3D objects that can be hit by the LiDAR beam. """
 
         success, boxes = get_onnx_boxes(predictions, self.objects_3d)
         
@@ -132,41 +176,67 @@ class LineFollower(Node):
             
             # Project 3D points to 2D image coordinates
             pixels, depth, x_values, y_values = self.projector.project_points_to_image(self.pts)
-            u, v = pixels.T
-            
-            
+
+            distance_dict = {}  # Store distances per label for optional visualization
+
             for id, box in boxes.items():
+                # Get the bounding box corners (x1, y1, x2, y2)
+                corners = box['corners']
+                label = box['label']
+                score = box['score']
 
-                x1, y1, x2, y2 = box['corners']
+                # Check which projected LiDAR points fall inside the bounding box on the image
+                mask = pixels_in_box(pixels, corners)
 
-                # Normalize box corners in case x1 > x2 or y1 > y2
-                xmin, xmax = sorted([x1, x2])
-                ymin, ymax = sorted([y1, y2])
+                # Use the mask to select the corresponding 3D LiDAR x and y values
+                # Then take the median to get a stable estimate of the object's position
+                x_med = np.median(x_values[mask]).item()
+                y_med = np.median(y_values[mask]).item()
 
-                # Create a mask for pixels inside the bounding box
-                mask = (u >= xmin) & (u <= xmax) & (v >= ymin) & (v <= ymax)
+                # Compute the 2D Euclidean distance from the vehicle to the detected object
+                distance = np.hypot(x_med, y_med)
 
-                # Select corresponding depth values
-                d = np.median(depth[mask]).item()
-                x = -np.median(x_values[mask]).item() # invert axis
-                y = np.median(y_values[mask]).item()
+                # Log the estimated x, y position and the 2D distance to the object
+                self.get_logger().info(f"{label}: x={x_med:.2f}, y={y_med:.2f}, distance={distance:.2f}")
 
-                self.get_logger().info(f"x={x:.2f}, y={y:.2f}, depth={d:.2f}, hypot={np.hypot(x, y):.2f}")
+                # Store the detection as [label, score, x, y, z]
+                detections[id] = [label, score, x_med, y_med, 0.0]  # z = 0 since LiDAR is 2D
 
-                detections[id] = [box['label'], box['score'], x, y, 0.0]
+                # Save the distance using the object's label as key (e.g., 'car': 3.42)
+                distance_dict[label] = distance
 
+            # Draw all label: distance entries onto the image
+            plot = display_distances(plot, distance_dict)
 
-        # === Step 2: 2D Object Detection and Distance Estimation ===
-        # - Extract object predictions from the model output
-        # - Estimate 3D position using homography transformation
-        # - Add all detections to a Detection3DArray for publishing
+        """ Step 2: 2D Object Detection (Homography)
+        Detect flat objects like lane lines and project them to the ground plane using homography.
+        Ideal for surface-level features."""
 
         # Identify the next waypoint along the lane line
+        # This function checks if any of the 2D object classes (e.g., 'center') are present in the prediction mask.
+        # 'success' will be True if at least one of the specified 2D object classes is detected in the mask.
+
+        # The prediction mask uses 0 for background, and (class_id + 1) for each class.
+        # For example, if 'center' has class_id = 1, then all 'center' pixels in the mask will have value 2.
+
+        # 'scores' is a dictionary with the highest score per detected class.
+        # Format: {id: {'label': 'center', 'score': 0.98, ...}}
+
         success, mask, scores = parse_predictions(predictions, self.objects_2d)
 
+
+        # Right now, we only detect the center line.
+        # In future lane-keeping setups, you might have two separate classes: 'left' and 'right' lane lines.
+        # The mask will then include three values: background (0), left (class_id + 1), and right (class_id + 1).
+        # For example, if left = 2 and right = 5, the mask values will be: left = 3, right = 6.
+        # You’ll need to decide how to compute a good waypoint (e.g., midpoint between lines).
         if success:
             
+            # Get the base point (e.g., bottom-most pixel) from the mask to use as the waypoint
             cx, cy = get_base(mask)
+
+            # Draw a visual marker (e.g., a circle) at the selected waypoint position on the image
+            plot = draw_circle(plot, cx, cy)
 
             # Transform from pixel to world coordinates
             x, y = self.to_surface_coordinates(cx, cy)
@@ -177,19 +247,15 @@ class LineFollower(Node):
 
                 detections[id] = [label, score, x, y, 0.0]
 
+        # Convert the detections into a Detection3DArray message and publish it
         msg = to_detection3d_array(detections, timestamp_unix)
-        
         self.detection3d_pub.publish(msg)
-
-        # Draw results on the image
-        plot = predictions[0].plot()
 
         # Convert back to ROS2 Image and publish
         im_msg = np_to_image(cv2.cvtColor(plot, cv2.COLOR_BGR2RGB))
 
         # Publish predictions
         self.im_publisher.publish(im_msg)
-
 
 
 def main(args=None):
