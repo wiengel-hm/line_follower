@@ -75,50 +75,57 @@ def draw_box(image, im_canny, corners, color=(0, 255, 0), thickness = 2):
 
     return image
 
-def parse_predictions(predictions, class_ids = [0]):
-
+def parse_predictions(predictions, id2label: dict):
     """
-    Process the model predictions and create a mask image for the specified class IDs.
+    Process model predictions and generate a mask image for specified classes.
 
     Parameters:
-    - predictions (list): A list containing prediction results, typically including bounding boxes, masks, and class labels.
-    - class_ids (list): List of class IDs to be included in the mask (default is [0] for center line).
+    - predictions (list): Model output containing masks, class_ids, and scores.
+    - id2label (dict): Mapping from class ID to label name (e.g., {0: 'car', 2: 'sign'}).
 
     Returns:
-    - bool: True if at least one valid mask is found, False otherwise.
-    - numpy.ndarray or None: The final mask image resized to the original input size, or None if no masks match the specified class IDs.
+    - bool: True if any matching detections were found, False otherwise.
+    - numpy.ndarray or None: Output mask with class regions, or None if no match.
+    - dict: Mapping from class ID to {'label': str, 'score': float} for detected classes.
     """
 
-    # We only process one image at a time (batch size = 1)
+    # Initialize score dictionary with 0.0 confidence per class ID
+    scores = {id_: {'label': lbl, 'score': 0.0} for id_, lbl in id2label.items()}
+
+    # Handle empty prediction case
     if len(predictions) < 1:
-        return False, None
+        return False, None, scores
 
     p = predictions[0]
 
-    ids = np.array(p.class_ids)  # Class IDs e.g., center line (0), stop sign (1)
-    masks = np.array(p.masks)  # Masks for each detected object
+    ids = np.array(p.class_ids)        # Detected class IDs
+    masks = np.array(p.masks)          # Segmentation masks
+    confidences = np.array(p.scores)   # Detection confidences
 
-    # Create a mask for detections that match our target class IDs
+    # Only keep detections for class IDs we care about
+    class_ids = list(id2label.keys())
     cls_mask = np.isin(ids, class_ids)
 
-    # If none of the detections match the desired class IDs, exit early
     if not cls_mask.any():
-        return False, None
+        return False, None, scores
 
-    # Keep only the masks and IDs that match the class of interest
+    # Filter predictions
     ids = ids[cls_mask]
     masks = masks[cls_mask]
+    conf = confidences[cls_mask]
 
-    # Create an empty output image to store our final mask
+    # Update score dictionary with max score for each class ID
+    for id_ in np.unique(ids):
+        max_score = float(conf[ids == id_].max())
+        scores[id_]['score'] = max_score
+
+    # Compose output mask with class indices (offset by +1 to avoid background)
     output = np.zeros_like(masks[0], dtype=np.uint8)
-
     for i, mask in enumerate(masks):
-        # We expect only one left and one right lane line (or other relevant objects)
-        # If there are multiple detections, we combine them into one mask
-        # (Alternatively, we could keep only the detection with the highest confidence)
-        output[mask == 1] = ids[i] + 1  # Add +1 to avoid zero (background) value
+        output[mask == 1] = ids[i] + 1
 
-    return True, output
+    return True, output, scores
+
 
 def get_base(mask, N = 100):
     y, x = np.nonzero(mask)
@@ -160,3 +167,66 @@ def detect_bbox_center(predictions, target_id):
     center_x = (x1 + x2) /2
 
     return True, float(center_x), float(y2)  # Return the bottom center coordinates
+
+def get_bounding_boxes(predictions, objects_3d):
+
+    # Check if there are any predictions
+    if len(predictions) == 0:
+        return False, None
+
+    p = predictions[0].cpu()  # Get the first prediction (move to CPU)
+    all_boxes = p.boxes  # Access the bounding boxes
+    ids = all_boxes.cls.numpy()  # Class IDs for each detected object
+    confidences = all_boxes.conf.numpy()  # Confidence scores for each detection
+
+    detections = {}
+    for id, lbl in objects_3d.items():
+      # Check if the class ID is present in the predictions
+      if id in ids:
+
+        # Filter the boxes with the target ID
+        boxes = all_boxes[ids == id]
+        conf = confidences[ids == id]
+
+        # Take the bbox with the highest confidence
+        corners = boxes.xyxy[np.argmax(conf)].numpy()
+
+        # Extract the center and size (xyxy) of the box with the highest confidence
+        detections[id] = {'name': lbl, 'corners': corners}
+
+    if len(detections) == 0:
+      return False, None
+    else:
+      return True, detections
+
+def get_onnx_boxes(predictions, objects_3d):
+
+    # Check if there are any predictions
+    if len(predictions) == 0:
+        return False, None
+
+    p = predictions[0]  # Get the first prediction
+
+    all_boxes = np.array(p.boxes)  # Access the bounding boxes
+    ids = np.array(p.class_ids) # Class IDs for each detected object
+    confidences = np.array(p.scores)  # Confidence scores for each detection
+    
+    detections = {}
+    for id, lbl in objects_3d.items():
+      # Check if the class ID is present in the predictions
+      if id in ids:
+
+        # Filter the boxes with the target ID
+        boxes = all_boxes[ids == id]
+        conf = confidences[ids == id]
+
+        # Extract the center and size (xyxy) of the first box
+        corners = boxes[np.argmax(conf)]
+
+        # Extract the center and size (xyxy) of the box with the highest confidence
+        detections[id] = {'label': lbl, 'score': np.max(conf), 'corners': corners}
+
+    if len(detections) == 0:
+      return False, None
+    else:
+      return True, detections
