@@ -3,14 +3,6 @@ import numpy as np
 import yaml
 import cv2
 
-def get_corners(cx, cy, win_w, win_h, image_w, image_h):
-    # Calculate the search window coordinates, ensuring they are within image bounds
-    x1 = max(0, int(cx - win_w / 2))
-    y1 = max(0, int(cy - win_h / 2))
-    x2 = min(image_w, x1 + win_w)
-    y2 = min(image_h, y1 + win_h)
-    return x1, x2, y1, y2
-
 def to_surface_coordinates(u, v, H):
     """
     Converts pixel coordinates (u, v) to surface coordinates using a homography matrix H.
@@ -58,91 +50,70 @@ def read_transform_config(filepath):
     homography_str = data.get('homography', None)
     H = np.array(eval(homography_str))
     return H
-    
 
-def draw_box(image, im_canny, corners, color=(0, 255, 0), thickness = 2):
 
-    x1, x2, y1, y2 = corners
-
-    # Draw the box on the image
-    cv2.rectangle(image, (x1, y1), (x2, y2), color=color, thickness=thickness)
-
-    # Extract the patch from the grayscale image
-    patch = cv2.cvtColor(im_canny, cv2.COLOR_GRAY2RGB)[y1:y2, x1:x2, :]
-
-    # Replace the corresponding region in the RGB image with the patch
-    image[y1:y2, x1:x2, :] = patch
-
+def draw_circle(image, x, y, radius=5, color=(0, 255, 0), thickness=-1):
+    center = (int(x), int(y))  # Create center tuple from x and y
+    cv2.circle(image, center, radius, color, thickness)
     return image
 
-def parse_predictions(predictions, id2label: dict):
-    """
-    Process model predictions and generate a mask image for specified classes.
+# Function to determine if dashline is present.  Takes in the predictions and
+# a class id if necessary (set by default) and returns a flag to indicate if
+# we were successful in finding a dashed line and the centroid of the dashed
+# line.
+def forkline_visible(predictions, cls_id = 0):
 
-    Parameters:
-    - predictions (list): Model output containing masks, class_ids, and scores.
-    - id2label (dict): Mapping from class ID to label name (e.g., {0: 'car', 2: 'sign'}).
-
-    Returns:
-    - bool: True if any matching detections were found, False otherwise.
-    - numpy.ndarray or None: Output mask with class regions, or None if no match.
-    - dict: Mapping from class ID to {'label': str, 'score': float} for detected classes.
-    """
-
-    # Initialize score dictionary with 0.0 confidence per class ID
-    scores = {id_: {'label': lbl, 'score': 0.0} for id_, lbl in id2label.items()}
-
-    if len(predictions) == 0:
-        return False, None, scores
-
-    # We only process one image at a time (batch size = 1)
-    p = predictions[0]
-
-    bboxs = p.boxes
-    ids = bboxs.cls.cpu().numpy()        # Class IDs e.g., center(0), stop(1)
-    confidences = bboxs.conf.cpu().numpy() # Confidence scores (not used here)
-
-    masks = p.masks
-
-    # Only keep detections for class IDs we care about
-    class_ids = list(id2label.keys())
-    cls_mask = np.isin(ids, class_ids)
-
-    # If none of the detections match the desired class_ids, exit early
-    if not cls_mask.any():
-        return False, None, scores
-
-    shape = masks.orig_shape
-    (height, width) = shape
-
-    # Each detected object has its own mask
-    data = masks.data.cpu().numpy()  # Shape: (N, W, H) — N = number of masks
-
-    # Keep only the masks and IDs that match our class of interest
-    ids = ids[cls_mask]
-    data = data[cls_mask]
-    conf = confidences[cls_mask]
-
-    # Update score dictionary with max score for each class ID
-    for id_ in np.unique(ids):
-        max_score = float(conf[ids == id_].max())
-        scores[id_]['score'] = max_score
-
-    # Create an empty output image to store our final mask
-    output = np.zeros(shape=shape, dtype=np.uint8)
-
-    for i, mask in enumerate(data):
-        # Resize the mask to match the original image size
-        mask = cv2.resize(mask, (width, height), interpolation=cv2.INTER_NEAREST)
-
-        # We expect only one left and one right lane line
-        # If there are multiple detections, we combine them into one mask
-        # (Another option would be to keep only the detection with the highest confidence)
-        output[mask == 1] = ids[i] + 1  # We add +1 because background is 0
-
-    return True, output, scores
+  # Step 1: Check if there are any predictions
+  if len(predictions) == 0:
+      return False, None, None
+  _, dash_masks, dash_conf = get_masks_of_id(predictions, cls_id)
+  if dash_masks is None:
+    return False, None, None
+  # If we have more than one detected dashed line take the highest confidence
+  mask = get_highest_confidence(dash_masks, dash_conf)
+  if mask is None:
+    return False, None, None
+  # Resize the mask to match the original image size
+  c = get_top(mask, N=5)
+  cx = c[0]
+  cy = c[1]
+  # Step 3: Return True (forkline visible) and the center x position
+  return True, cx, cy
 
 
+# Function to count the amount of people.  Takes in predictions and a class id
+# to count (set by default), and returns an np array of centroids of the people
+# in the image.  Returns an empty np array if no people are detected
+def count_people(predictions, cls_id=2):
+  # Returns the center x of all detected persons
+  # Step 1: Check if there are any predictions
+  if len(predictions) == 0:
+      return np.array([])
+  centers = []
+  # Get the masks of the people
+  _, ppl_masks, _ = get_masks_of_id(predictions, cls_id)
+
+  # Make sure there are actually people in the scene
+  if ppl_masks is None:
+    return np.array([])
+
+  # Get the centroid of each person (in the x direction)
+  for mask in ppl_masks:
+    c = get_centroid(mask)
+    centers.append(c[0])
+
+  return np.array(centers)
+
+# Helper function that gets the centroid of a mask.  Takes in a mask and returns
+# a list of the coordinates of the mask in [x, y]
+def get_centroid(mask):
+  # find the locations of the 1's in the mask image
+  locs = np.argwhere(mask==1)
+  # return the average position of the 1s in the image (flipping to return x,y)
+  return np.flip(locs.mean(axis=0))
+
+# Helper function, originally created by Professor Engel, that takes in a mask
+# and returns the base of the mask
 def get_base(mask, N = 100):
     y, x = np.nonzero(mask)
     xs = x[np.argsort(y, )][-N:]
@@ -150,164 +121,226 @@ def get_base(mask, N = 100):
 
     cx, cy = np.mean([xs, ys], axis = 1)
 
-    return cx, cy
+    return [cx, cy]
 
-def draw_circle(image, x, y, radius=5, color=(0, 255, 0), thickness=-1):
-    center = (int(x), int(y))  # Create center tuple from x and y
-    cv2.circle(image, center, radius, color, thickness)
-    return image
+# Get top, exactly the same as get base but gets the top of the mask instead
+def get_top(mask, N = 100):
+    y, x = np.nonzero(mask)
+    xs = x[np.argsort(y, )][:N]
+    ys = y[np.argsort(y)][:N]
 
-def detect_bbox_center(predictions, target_id):
+    cx, cy = np.mean([xs, ys], axis = 1)
 
-    # Check if there are any predictions
-    if len(predictions) == 0:
-        return False, None, None
+    return [cx, cy]
 
-    p = predictions[0]  # Get the first prediction
+# Combines the centroid and base getters to return the x value of the centroid
+# of the mask but the y value of the base of the mask.  Doing this made the
+# homographic transformation the most stable in testing for the path following.
+# Getting just the centroid lead to wild swings in the steering angle, and just
+# getting the base didnt steer the car enough (and provided wrong results)
+def get_centroid_at_base(mask):
+  # Get the y value of the base of the mask
+  _, y = get_base(mask)
+  # get the x value of the centroid of the mask
+  c = get_centroid(mask)
+  return [c[0], y]
 
-    all_boxes = np.array(p.boxes)  # Access the bounding boxes
-    ids = np.array(p.class_ids) # Class IDs for each detected object
-    confidences = np.array(p.scores)  # Confidence scores for each detection
-
-    # Check if the target class ID is present in the predictions
-    if target_id not in ids:
-        return False, None, None
-
-    # Filter the boxes with the target ID
-    boxes = all_boxes[ids == target_id]
-
-    # Extract the center and size (xyxy) of the first box
-    x1, y1, x2, y2 = boxes[0]
-
-    # Calculate the center X-coordinate
-    center_x = (x1 + x2) /2
-
-    return True, float(center_x), float(y2)  # Return the bottom center coordinates
-
-def get_bounding_boxes(predictions, objects_3d):
-
-    # Check if there are any predictions
-    if len(predictions) == 0:
-        return False, None
-
-    p = predictions[0].cpu()  # Get the first prediction (move to CPU)
-    all_boxes = p.boxes  # Access the bounding boxes
-    ids = all_boxes.cls.numpy()  # Class IDs for each detected object
-    confidences = all_boxes.conf.numpy()  # Confidence scores for each detection
-
-    detections = {}
-    for id, lbl in objects_3d.items():
-      # Check if the class ID is present in the predictions
-      if id in ids:
-
-        # Filter the boxes with the target ID
-        boxes = all_boxes[ids == id]
-        conf = confidences[ids == id]
-
-        # Take the bbox with the highest confidence
-        corners = boxes.xyxy[np.argmax(conf)].numpy()
-
-        # Extract the center and size (xyxy) of the box with the highest confidence
-        detections[id] = {'label': lbl, 'score': np.max(conf).item(), 'corners': corners}
-
-    if len(detections) == 0:
-      return False, None
-    else:
-      return True, detections
-
-def get_onnx_boxes(predictions, objects_3d):
-
-    # Check if there are any predictions
-    if len(predictions) == 0:
-        return False, None
-
-    p = predictions[0]  # Get the first prediction
-
-    all_boxes = np.array(p.boxes)  # Access the bounding boxes
-    ids = np.array(p.class_ids) # Class IDs for each detected object
-    confidences = np.array(p.scores)  # Confidence scores for each detection
-    
-    detections = {}
-    for id, lbl in objects_3d.items():
-      # Check if the class ID is present in the predictions
-      if id in ids:
-
-        # Filter the boxes with the target ID
-        boxes = all_boxes[ids == id]
-        conf = confidences[ids == id]
-
-        # Extract the center and size (xyxy) of the first box
-        corners = boxes[np.argmax(conf)]
-
-        # Extract the center and size (xyxy) of the box with the highest confidence
-        detections[id] = {'label': lbl, 'score': np.max(conf), 'corners': corners}
-
-    if len(detections) == 0:
-      return False, None
-    else:
-      return True, detections
-
-def pixels_in_box(pixels, corners):
-    """
-    Returns a boolean mask for which pixels fall inside a given 2D bounding box.
-
-    Args:
-        pixels (np.ndarray): Nx2 array of [u, v] image coordinates.
-        corners (list): [x1, y1, x2, y2] bounding box corners.
-
-    Returns:
-        np.ndarray: Boolean mask of shape (N,) with True for pixels inside the box.
-    """
-    u, v = pixels.T
-    x1, y1, x2, y2 = corners
-
-    xmin, xmax = sorted([x1, x2])
-    ymin, ymax = sorted([y1, y2])
-
-    return (u >= xmin) & (u <= xmax) & (v >= ymin) & (v <= ymax)
+# Function to find the highest confidence mask in a list of masks. Takes in
+# lists of masks and matching confidences and returns the highest confidence
+# mask.
+def get_highest_confidence(masks, conf):
+  # perform a check to make sure we have more than one mask
+  if len(masks) > 1:
+    # if we do, get the highest confidence mask
+    i = np.argmax(conf)
+    mask = masks[i]
+  else:
+    # if not just return the mask
+    mask = masks[0]
+  return mask
 
 
-def display_distances(image, distance_dict):
-    """
-    Draws all label: distance entries in the top-left corner of the image
-    with a single white semi-transparent background box.
+# Helper function (abstracting out this code from each of the driving functions)
+# that returns a lists of ids, masks, and confidences of a particular mask.
+# Takes in a prediction to parse through and the id of the masks you want to
+# return.  Returns the ids, masks, and confidences associated with that id.
+def get_masks_of_id(predictions, id):
+  # Get the first prediciton if we have multiple
+  p = predictions[0]
 
-    Args:
-        image (np.ndarray): The input BGR image.
-        distance_dict (dict): Dictionary with {label: distance} entries.
+  bboxs = p.boxes
+  ids = bboxs.cls.cpu().numpy()        # Class IDs e.g., center(0), stop(1)
+  conf = bboxs.conf.cpu().numpy() # Confidence scores (not used here)
+  
+  masks = p.masks
 
-    Returns:
-        np.ndarray: Annotated image.
-    """
-    overlay = image.copy()
-    output = image.copy()
-    
-    x, y = 10, 20
-    dy = 20  # Line spacing
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    font_scale = 0.5  # Smaller font
-    text_color = (0, 0, 0)  # Black text
-    box_color = (255, 255, 255)  # White background
-    thickness = 1
-    alpha = 0.6  # Transparency
+  # If we have no masks, (i.e. nothing was predicted), return None
+  if p.masks is None:
+    return None, None, None
 
-    # Prepare all lines and calculate max text width
-    lines = [f"{label}: {dist:.2f} m" for label, dist in distance_dict.items()]
-    text_sizes = [cv2.getTextSize(line, font, font_scale, thickness)[0] for line in lines]
-    max_width = max(w for w, h in text_sizes)
-    total_height = dy * len(lines)
+  # Get the ids, confidences, and masks from the prediction
 
-    # Draw one background box
-    top_left = (x - 5, y - 15)
-    bottom_right = (x + max_width + 5, y - 15 + total_height)
-    cv2.rectangle(overlay, top_left, bottom_right, box_color, -1)
+  shape = masks.orig_shape
+  (height, width) = shape
+  
+  # Each detected object has its own mask
+  masks = masks.data.cpu().numpy()  # Shape: (N, W, H) — N = number of masks
+  
+  # Create a mask for detections that match our target class IDs
+  cls_mask = np.isin(ids, id)
 
-    # Draw each line of text
-    for i, line in enumerate(lines):
-        line_y = y + i * dy
-        cv2.putText(overlay, line, (x, line_y), font, font_scale, text_color, thickness, cv2.LINE_AA)
+  # If we have none of the desired class, return None
+  if len(cls_mask) == 0:
+    return None, None, None
 
-    # Blend overlay and original image
-    cv2.addWeighted(overlay, alpha, output, 1 - alpha, 0, output)
+  # Use logical indexing to get the desired ids masks and confidences
+  parsed_ids = ids[cls_mask]
+  parsed_masks = masks[cls_mask]
+  parsed_conf = conf[cls_mask]
 
-    return output
+  # Final check to make sure the parsed lists are not empty
+  if len(parsed_ids) == 0:
+    parsed_ids = None
+  if len(parsed_masks) == 0:
+    parsed_masks = None
+  if len(parsed_conf) == 0:
+    parsed_conf = None
+
+  # return the parsed lists
+  return parsed_ids, parsed_masks, parsed_conf
+
+
+# Function to return either the left most left line or right most right line.
+# Takes in a list of masks and a string that is either 'left' or 'right' to
+# determine if we are deciding the left most line or right most line (set by
+# default to left).  Returns the either left or right most mask and its centroid
+# at its base (x is the centroid, y is the base).
+def get_outside_most(masks, lr='left'):
+  # Perform a check to make sure lr is either 'left' or 'right'
+  if lr.lower() != 'left' and lr.lower() != 'right':
+    raise ValueError("lr must be either 'left' or 'right'")
+
+  #  Allocate empty list of x and y values
+  mask_x_values = []
+  mask_y_values = []
+
+  # Loop through the masks and store their x and y coordinates in the above lists
+  for mask in masks:
+    c = get_centroid_at_base(mask)
+    mask_x_values.append(c[0])
+    mask_y_values.append(c[1])
+
+  # Convert the lists to np arrays
+  mask_x_values = np.array(mask_x_values)
+  mask_y_values = np.array(mask_y_values)
+
+  # Check if we are looking for leftmost or rightmost
+  # if its left most, get the index of the minimum x value and store those x, y,
+  # and masks in respective variables.
+  if lr.lower() == 'left':
+    leftmost_in = np.argmin(mask_x_values)
+    cx = mask_x_values[leftmost_in]
+    cy = mask_y_values[leftmost_in]
+    mask = masks[leftmost_in]
+
+  # If we want the right most, same process but get the maximum x value
+  elif lr.lower() == 'right':
+    rightmost_in = np.argmax(mask_x_values)
+    cx = mask_x_values[rightmost_in]
+    cy = mask_y_values[rightmost_in]
+    mask = masks[rightmost_in]
+
+  # Final check to make sure we have 'left' or 'right' as our lr variable
+  else:
+    raise ValueError("lr must be either 'left' or 'right'")
+
+  # Return the mask and the x and y coordinates
+  return mask, cx, cy
+
+
+def calculate_drive_waypoint(predictions, left_id = 1, right_id = 3):
+  # check to make sure we have predictions
+  if len(predictions) == 0:
+      return False, None, None
+
+  # get the size of the screen in the predictions
+  """DOES NOT WORK FOR ONNX RUNTIME I THINK"""
+  #screen_size = predictions[0].orig_shape
+  screen_size = [360, 640]
+  # use that to get the center of the screen
+  center_screen_x = screen_size[1]/2
+  center_screen_y = screen_size[0]/2
+
+
+  # Assume a fixed offset for one line driving.  Basically, the goal is to shift
+  # the line we are following to the center of the screen to treat it like a
+  # line follower. This fixed offset is assumed to be in the center of the
+  # screen.  The right offset is negative since the offset is added
+  left_offset = center_screen_x
+  right_offset = -center_screen_x
+
+
+  # get the list of right line and left line masks
+  left_ids, left_masks, left_conf = get_masks_of_id(predictions, left_id)
+  right_ids, right_masks, right_conf = get_masks_of_id(predictions, right_id)
+
+  # Confirm we have left and right lines in the image
+  if left_masks is None and right_masks is None:
+    return False, None, None
+
+  # predefine these values
+  left_cx = 0.0
+  right_cx = 0.0
+  left_cy = 0.0
+  right_cy = 0.0
+
+  # clip offset is for shrinking the clip window so the waypoint can't go past it
+  clip_offset = 50
+
+  # For the left and right masks, we need to decide which line (if there are
+  # multiple) we should follow.  For other instances, it might make sense to get
+  # the highest confidence line.  We chose to instead get the left most line for
+  # the left lines and rightmost line for the right lines.
+  if left_masks is not None:
+    left_mask, left_cx, left_cy = get_outside_most(left_masks)
+  else:
+    left_mask = None
+
+  if right_masks is not None:
+    right_mask, right_cx, right_cy = get_outside_most(right_masks, lr='right')
+  else:
+    right_mask = None
+
+  # Sometimes, left side is like way too far left (same for right some times)
+  # so if a left or right side is further than 3/4 of the way to the other side
+  # of the screen, disregard the line
+  if left_mask is not None and left_cx > screen_size[1]*0.75:
+      left_mask = None
+  if right_mask is not None and right_cx < screen_size[1]*0.25:
+      right_mask = None
+
+  # Get Center of the screen for the following
+  # First deal with the condition there is both a left and a right line
+  # If both are present, average their centroids and return
+  if left_mask is not None and right_mask is not None:
+    return True, (left_cx+right_cx)/2, (left_cy+right_cy)/2
+
+  # Next deal with the left line
+  if right_mask is None and left_mask is not None:
+    # The waypoint we should follow should be offset by the constant offset
+    # I am also clipping it so it stays on the screen.  This helps prevents
+    # major spikes.
+    left_cx = max(min(left_cx + left_offset, screen_size[1])-clip_offset,clip_offset)
+    return True, left_cx, left_cy
+
+  # Next deal with the right line
+  # Now do the same for the right side
+  if right_mask is not None and left_mask is None:
+    # The waypoint we should follow should be offset by the constant offset
+    # I am also clipping it so it stays on the screen.  This helps prevents
+    # major spikes.
+    right_cx = max(min(right_cx + right_offset, screen_size[1]-clip_offset),clip_offset)
+    return True, right_cx, right_cy
+
+  # if all else fails, return error state
+  return False, None, None
