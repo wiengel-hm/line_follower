@@ -75,25 +75,19 @@ def draw_box(image, im_canny, corners, color=(0, 255, 0), thickness = 2):
 
     return image
 
-def parse_predictions(predictions, id2label: dict):
+def parse_predictions(predictions, class_ids = [0]):
     """
-    Process model predictions and generate a mask image for specified classes.
+    Process the model predictions and create a mask image.
 
     Parameters:
-    - predictions (list): Model output containing masks, class_ids, and scores.
-    - id2label (dict): Mapping from class ID to label name (e.g., {0: 'car', 2: 'sign'}).
+    - predictions (list): A list containing prediction results like bounding boxes, masks, and class labels.
 
     Returns:
-    - bool: True if any matching detections were found, False otherwise.
-    - numpy.ndarray or None: Output mask with class regions, or None if no match.
-    - dict: Mapping from class ID to {'label': str, 'score': float} for detected classes.
+    - numpy.ndarray or None: The final mask image resized to the original input size, or None if no masks were found.
     """
 
-    # Initialize score dictionary with 0.0 confidence per class ID
-    scores = {id_: {'label': lbl, 'score': 0.0} for id_, lbl in id2label.items()}
-
     if len(predictions) == 0:
-        return False, None, scores
+        return False, None
 
     # We only process one image at a time (batch size = 1)
     p = predictions[0]
@@ -104,13 +98,12 @@ def parse_predictions(predictions, id2label: dict):
 
     masks = p.masks
 
-    # Only keep detections for class IDs we care about
-    class_ids = list(id2label.keys())
+    # Create a mask for detections that match our target classes (we're only interested in the center line)
     cls_mask = np.isin(ids, class_ids)
 
     # If none of the detections match the desired class_ids, exit early
     if not cls_mask.any():
-        return False, None, scores
+        return False, None
 
     shape = masks.orig_shape
     (height, width) = shape
@@ -121,12 +114,6 @@ def parse_predictions(predictions, id2label: dict):
     # Keep only the masks and IDs that match our class of interest
     ids = ids[cls_mask]
     data = data[cls_mask]
-    conf = confidences[cls_mask]
-
-    # Update score dictionary with max score for each class ID
-    for id_ in np.unique(ids):
-        max_score = float(conf[ids == id_].max())
-        scores[id_]['score'] = max_score
 
     # Create an empty output image to store our final mask
     output = np.zeros(shape=shape, dtype=np.uint8)
@@ -140,8 +127,7 @@ def parse_predictions(predictions, id2label: dict):
         # (Another option would be to keep only the detection with the highest confidence)
         output[mask == 1] = ids[i] + 1  # We add +1 because background is 0
 
-    return True, output, scores
-
+    return True, output
 
 def get_base(mask, N = 100):
     y, x = np.nonzero(mask)
@@ -157,17 +143,16 @@ def draw_circle(image, x, y, radius=5, color=(0, 255, 0), thickness=-1):
     cv2.circle(image, center, radius, color, thickness)
     return image
 
-def detect_bbox_center(predictions, target_id):
 
+def detect_bbox_center(predictions, target_id):
     # Check if there are any predictions
     if len(predictions) == 0:
         return False, None, None
 
-    p = predictions[0]  # Get the first prediction
-
-    all_boxes = np.array(p.boxes)  # Access the bounding boxes
-    ids = np.array(p.class_ids) # Class IDs for each detected object
-    confidences = np.array(p.scores)  # Confidence scores for each detection
+    p = predictions[0].cpu()  # Get the first prediction (move to CPU)
+    all_boxes = p.boxes  # Access the bounding boxes
+    ids = all_boxes.cls.numpy()  # Class IDs for each detected object
+    confidences = all_boxes.conf.numpy()  # Confidence scores for each detection
 
     # Check if the target class ID is present in the predictions
     if target_id not in ids:
@@ -176,138 +161,10 @@ def detect_bbox_center(predictions, target_id):
     # Filter the boxes with the target ID
     boxes = all_boxes[ids == target_id]
 
-    # Extract the center and size (xyxy) of the first box
-    x1, y1, x2, y2 = boxes[0]
+    # Extract the center and size (xywh) of the first box
+    center_x, center_y, w, h = boxes.xywh[0].numpy()
 
-    # Calculate the center X-coordinate
-    center_x = (x1 + x2) /2
+    # Calculate the bottom center Y-coordinate
+    bottom_y = center_y + h // 2  # Use + instead of - to get the bottom y
 
-    return True, float(center_x), float(y2)  # Return the bottom center coordinates
-
-def get_bounding_boxes(predictions, objects_3d):
-
-    # Check if there are any predictions
-    if len(predictions) == 0:
-        return False, None
-
-    p = predictions[0].cpu()  # Get the first prediction (move to CPU)
-    all_boxes = p.boxes  # Access the bounding boxes
-    ids = all_boxes.cls.numpy()  # Class IDs for each detected object
-    confidences = all_boxes.conf.numpy()  # Confidence scores for each detection
-
-    detections = {}
-    for id, lbl in objects_3d.items():
-      # Check if the class ID is present in the predictions
-      if id in ids:
-
-        # Filter the boxes with the target ID
-        boxes = all_boxes[ids == id]
-        conf = confidences[ids == id]
-
-        # Take the bbox with the highest confidence
-        corners = boxes.xyxy[np.argmax(conf)].numpy()
-
-        # Extract the center and size (xyxy) of the box with the highest confidence
-        detections[id] = {'label': lbl, 'score': np.max(conf).item(), 'corners': corners}
-
-    if len(detections) == 0:
-      return False, None
-    else:
-      return True, detections
-
-def get_onnx_boxes(predictions, objects_3d):
-
-    # Check if there are any predictions
-    if len(predictions) == 0:
-        return False, None
-
-    p = predictions[0]  # Get the first prediction
-
-    all_boxes = np.array(p.boxes)  # Access the bounding boxes
-    ids = np.array(p.class_ids) # Class IDs for each detected object
-    confidences = np.array(p.scores)  # Confidence scores for each detection
-    
-    detections = {}
-    for id, lbl in objects_3d.items():
-      # Check if the class ID is present in the predictions
-      if id in ids:
-
-        # Filter the boxes with the target ID
-        boxes = all_boxes[ids == id]
-        conf = confidences[ids == id]
-
-        # Extract the center and size (xyxy) of the first box
-        corners = boxes[np.argmax(conf)]
-
-        # Extract the center and size (xyxy) of the box with the highest confidence
-        detections[id] = {'label': lbl, 'score': np.max(conf), 'corners': corners}
-
-    if len(detections) == 0:
-      return False, None
-    else:
-      return True, detections
-
-def pixels_in_box(pixels, corners):
-    """
-    Returns a boolean mask for which pixels fall inside a given 2D bounding box.
-
-    Args:
-        pixels (np.ndarray): Nx2 array of [u, v] image coordinates.
-        corners (list): [x1, y1, x2, y2] bounding box corners.
-
-    Returns:
-        np.ndarray: Boolean mask of shape (N,) with True for pixels inside the box.
-    """
-    u, v = pixels.T
-    x1, y1, x2, y2 = corners
-
-    xmin, xmax = sorted([x1, x2])
-    ymin, ymax = sorted([y1, y2])
-
-    return (u >= xmin) & (u <= xmax) & (v >= ymin) & (v <= ymax)
-
-
-def display_distances(image, distance_dict):
-    """
-    Draws all label: distance entries in the top-left corner of the image
-    with a single white semi-transparent background box.
-
-    Args:
-        image (np.ndarray): The input BGR image.
-        distance_dict (dict): Dictionary with {label: distance} entries.
-
-    Returns:
-        np.ndarray: Annotated image.
-    """
-    overlay = image.copy()
-    output = image.copy()
-    
-    x, y = 10, 20
-    dy = 20  # Line spacing
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    font_scale = 0.5  # Smaller font
-    text_color = (0, 0, 0)  # Black text
-    box_color = (255, 255, 255)  # White background
-    thickness = 1
-    alpha = 0.6  # Transparency
-
-    # Prepare all lines and calculate max text width
-    lines = [f"{label}: {dist:.2f} m" for label, dist in distance_dict.items()]
-    text_sizes = [cv2.getTextSize(line, font, font_scale, thickness)[0] for line in lines]
-    max_width = max(w for w, h in text_sizes)
-    total_height = dy * len(lines)
-
-    # Draw one background box
-    top_left = (x - 5, y - 15)
-    bottom_right = (x + max_width + 5, y - 15 + total_height)
-    cv2.rectangle(overlay, top_left, bottom_right, box_color, -1)
-
-    # Draw each line of text
-    for i, line in enumerate(lines):
-        line_y = y + i * dy
-        cv2.putText(overlay, line, (x, line_y), font, font_scale, text_color, thickness, cv2.LINE_AA)
-
-    # Blend overlay and original image
-    cv2.addWeighted(overlay, alpha, output, 1 - alpha, 0, output)
-
-    return output
+    return True, float(center_x), float(bottom_y)  # Return the bottom center coordinates
