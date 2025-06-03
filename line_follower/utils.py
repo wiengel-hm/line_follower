@@ -92,26 +92,35 @@ def parse_predictions(predictions, id2label: dict):
     # Initialize score dictionary with 0.0 confidence per class ID
     scores = {id_: {'label': lbl, 'score': 0.0} for id_, lbl in id2label.items()}
 
-    # Handle empty prediction case
-    if len(predictions) < 1:
+    if len(predictions) == 0:
         return False, None, scores
 
+    # We only process one image at a time (batch size = 1)
     p = predictions[0]
 
-    ids = np.array(p.class_ids)        # Detected class IDs
-    masks = np.array(p.masks)          # Segmentation masks
-    confidences = np.array(p.scores)   # Detection confidences
+    bboxs = p.boxes
+    ids = bboxs.cls.cpu().numpy()        # Class IDs e.g., center(0), stop(1)
+    confidences = bboxs.conf.cpu().numpy() # Confidence scores (not used here)
+
+    masks = p.masks
 
     # Only keep detections for class IDs we care about
     class_ids = list(id2label.keys())
     cls_mask = np.isin(ids, class_ids)
 
+    # If none of the detections match the desired class_ids, exit early
     if not cls_mask.any():
         return False, None, scores
 
-    # Filter predictions
+    shape = masks.orig_shape
+    (height, width) = shape
+
+    # Each detected object has its own mask
+    data = masks.data.cpu().numpy()  # Shape: (N, W, H) — N = number of masks
+
+    # Keep only the masks and IDs that match our class of interest
     ids = ids[cls_mask]
-    masks = masks[cls_mask]
+    data = data[cls_mask]
     conf = confidences[cls_mask]
 
     # Update score dictionary with max score for each class ID
@@ -119,10 +128,17 @@ def parse_predictions(predictions, id2label: dict):
         max_score = float(conf[ids == id_].max())
         scores[id_]['score'] = max_score
 
-    # Compose output mask with class indices (offset by +1 to avoid background)
-    output = np.zeros_like(masks[0], dtype=np.uint8)
-    for i, mask in enumerate(masks):
-        output[mask == 1] = ids[i] + 1
+    # Create an empty output image to store our final mask
+    output = np.zeros(shape=shape, dtype=np.uint8)
+
+    for i, mask in enumerate(data):
+        # Resize the mask to match the original image size
+        mask = cv2.resize(mask, (width, height), interpolation=cv2.INTER_NEAREST)
+
+        # We expect only one left and one right lane line
+        # If there are multiple detections, we combine them into one mask
+        # (Another option would be to keep only the detection with the highest confidence)
+        output[mask == 1] = ids[i] + 1  # We add +1 because background is 0
 
     return True, output, scores
 
@@ -192,7 +208,7 @@ def get_bounding_boxes(predictions, objects_3d):
         corners = boxes.xyxy[np.argmax(conf)].numpy()
 
         # Extract the center and size (xyxy) of the box with the highest confidence
-        detections[id] = {'name': lbl, 'corners': corners}
+        detections[id] = {'label': lbl, 'score': np.max(conf).item(), 'corners': corners}
 
     if len(detections) == 0:
       return False, None
