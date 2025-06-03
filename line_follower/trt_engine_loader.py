@@ -271,15 +271,15 @@ class PilotNet(TensorRTModel):
         return float(prediction[0])
     
     @staticmethod
-    def preprocess_image_(image, ymin = 120, in_w = 240, in_h = 240):
+    def preprocess_image_(image, ymin = 120, ymax = 265, in_w = 640, in_h = 145):
         # Crop the top part of the image (remove sky, buildings, etc.)
-        img_cropped = image[ymin:]
+        img_cropped = image[ymin:ymax]
 
         # Convert to grayscale (1 channel instead of 3)
         gray = cv2.cvtColor(img_cropped, cv2.COLOR_RGB2GRAY)
 
         # Resize to model input size
-        resized = cv2.resize(gray, (in_h, in_w))
+        resized = cv2.resize(gray, (in_w, in_h))
 
         # Normalize pixel values to range [0, 1]
         norm = resized.astype(np.float32) / 255.0

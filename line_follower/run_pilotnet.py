@@ -30,8 +30,6 @@ class LineFollower(Node):
             raise FileNotFoundError(f"The file at '{model_path}' was not found.")
 
 
-
-
         # Subscriber to receive camera images
         self.im_subscriber = self.create_subscription(
             Image, 
@@ -43,7 +41,7 @@ class LineFollower(Node):
         # Initialize the TensorRT model
         self.model = PilotNet(model_path)
 
-        self.speed = 0.4
+        self.speed = 1.0
 
         # Log an informational message indicating that the Line Tracker Node has started
         self.get_logger().info("Line Tracker Node started. PilotNet trt engine loaded successfully.")
@@ -63,7 +61,8 @@ class LineFollower(Node):
         timestamp = msg.header.stamp
 
         # Create an Ackermann drive message with speed and steering angle
-        ackermann_msg = to_ackermann(self.speed, steering_angle, timestamp)
+        kp = 1.3
+        ackermann_msg = to_ackermann(self.speed, steering_angle * kp, timestamp)
 
         # Publish the message to the vehicle
         self.publisher.publish(ackermann_msg)
@@ -74,7 +73,8 @@ def main(args=None):
 
     # Path to your custom trained YOLO model
     pkg_path = get_package_prefix('line_follower').replace('install', 'src') # /mxck2_ws/install/line_follower → /mxck2_ws/src/line_follower
-    model_path = pkg_path + '/models/pilotnet.trt'
+    run = 'classic-pine-17'
+    model_path = pkg_path + f'/models/{run}/pilotnet.trt'
             
     rclpy.init(args=args)
     node = LineFollower(model_path)
