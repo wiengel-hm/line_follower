@@ -135,10 +135,11 @@ class LineFollower(Node):
         self.lane_width_pixels = 200  # Estimated lane width in pixels (adjust based on your setup)
         self.min_curve_threshold = 0.1  # Minimum curvature to consider it a curve
         self.straight_offset_ratio = 1  # For straight lanes, offset = lane_width * ratio
-        self.curve_offset_ratio = 0.8  # For curves, use smaller offset to stay safer
+        self.curve_offset_ratio = 1.5  # For curves, use smaller offset to stay safer
         
         # Store previous left lane positions for curvature calculation
         self.left_lane_history = []
+        self.right_lane_history = []
         self.history_length = 5  # Number of frames to keep for curvature analysis
 
         # Log an informational message indicating that the Line Tracker Node has started
@@ -229,6 +230,49 @@ class LineFollower(Node):
         
         return waypoint_cx, waypoint_cy, navigation_mode
 
+    def calculate_right_only_waypoint(self, right_cx, right_cy, mask):
+        """Calculate navigation waypoint using only left lane line"""
+        
+        # Add current right position to history
+        self.right_lane_history.append([right_cx, right_cy])
+        if len(self.right_lane_history) > self.history_length:
+            self.right_lane_history.pop(0)
+        
+        # Calculate curvature to determine if we're on a curve
+        curvature = self.calculate_curvature(self.right_lane_history)
+        
+        # Determine if this is a curve or straight section
+        is_curve = curvature > self.min_curve_threshold
+        
+        # Choose offset based on road type (this may be unecessarily complicated but still)
+        if is_curve:
+            # On curves, use smaller offset to stay safer and avoid cutting corners
+            offset_ratio = self.curve_offset_ratio
+            offset_pixels = int(self.lane_width_pixels * offset_ratio)
+            navigation_mode = "right_only_curve"
+        else:
+            # On straight sections, use larger offset to center better
+            offset_ratio = self.straight_offset_ratio  
+            offset_pixels = int(self.lane_width_pixels * offset_ratio)
+            navigation_mode = "right_only_straight"
+        
+        # Calculate waypoint by offsetting to the right of the left lane
+        # In image coordinates, moving left means increasing x
+        waypoint_cx = right_cx - offset_pixels
+        waypoint_cy = right_cy  # Keep same y-coordinate (distance ahead)
+        
+        # Ensure waypoint doesn't go outside image bounds
+        image_width = mask.shape[1]
+        waypoint_cx = min(waypoint_cx, image_width - 1)
+        waypoint_cx = max(waypoint_cx, 0)
+        
+        # Debugging stuff to see if our curvature stuff is correct 
+        self.get_logger().info(f"Left-only: curvature:{curvature:.3f}, "
+                              f"is_curve:{is_curve}, offset:{offset_pixels}px, "
+                              f"right:({right_cx},{right_cy}), waypoint:({waypoint_cx},{waypoint_cy})")
+        
+        return waypoint_cx, waypoint_cy, navigation_mode
+
     def scan_callback(self, msg):
         # Convert the incoming LiDAR scan message to NumPy format (x, y, intensity)
         xyi, timestamp_unix = scan_to_np(msg)
@@ -248,8 +292,9 @@ class LineFollower(Node):
         # Format: [label, score, x, y, z] — matches Detection3DArray format
         detections = self.detections.copy()
 
+
         # Run YOLO inference
-        predictions = self.model(image, verbose = False)
+        predictions = self.model(cv2.cvtColor(image, cv2.COLOR_BGR2RGB), verbose = False)
 
         # If there are no predictions, skip processing this frame
         if len(predictions) == 0:
@@ -373,11 +418,11 @@ class LineFollower(Node):
             elif right_waypoint and not left_waypoint:
                 # Only right lane detected - use right lane position directly
                 # (You could implement a similar offset calculation for right-only mode)
-                center_cx, center_cy = right_waypoint
+                right_cx, right_cy = right_waypoint
+                center_cx, center_cy, navigation_mode = self.calculate_right_only_waypoint(right_cx, right_cy, mask)
                 center_waypoint = (center_cx, center_cy)
-                navigation_mode = "right_lane_only"
                 # Draw right waypoint marker
-                plot = draw_circle(plot, center_cx, center_cy, color=(0, 255, 0))  # Green for right-only
+                plot = draw_circle(plot, center_cx, center_cy, color=(255, 255, 0))  # Green for right-only
             else:
                 # Fallback - no clear lane detection
                 self.get_logger().warn("No clear lane lines detected")
