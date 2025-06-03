@@ -14,16 +14,7 @@ def generate_launch_description():
         output='screen'
     )
 
-    # Launch rqt_image_view to visualize image topics
-    rqt_image_view_node = Node(
-        package="rqt_image_view",
-        executable="rqt_image_view",
-        name="rqt_image_view",
-        output="screen"
-    )
-
     # Return launch description including both nodes
     return launch.LaunchDescription([
-        line_tracker,
-        rqt_image_view_node
+        line_tracker
     ])
