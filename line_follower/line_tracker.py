@@ -166,7 +166,7 @@ class LineFollower(Node):
         detections = self.detections.copy()
 
         # Run YOLO inference
-        predictions = self.model(image)
+        predictions = self.model(image, verbose = False)
 
         # If there are no predictions, skip processing this frame
         if len(predictions) == 0:
