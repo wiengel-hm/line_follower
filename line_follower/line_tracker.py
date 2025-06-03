@@ -16,9 +16,10 @@ from ament_index_python.packages import get_package_share_directory, get_package
 # Project-Specific Imports
 from line_follower.utils import (
     to_surface_coordinates, read_transform_config, parse_predictions,
-    get_base, draw_circle, get_bounding_boxes, pixels_in_box, display_distances
+    get_base, draw_circle, get_bounding_boxes, pixels_in_box, display_distances,
+    generate_errors
 )
-from ros2_numpy import image_to_np, np_to_compressedimage, scan_to_np, to_detection3d_array, to_label_info
+from ros2_numpy import image_to_np, np_to_compressedimage, scan_to_np, to_detection3d_array, to_label_info, np_to_pose
 from ultralytics import YOLO
 from line_follower.fusion import LidarToImageProjector
 
@@ -33,10 +34,10 @@ class LineFollower(Node):
 
         # Read the homography matrix H from the given config file.
         # This matrix defines the transformation from 2D pixel coordinates to 3D world coordinates.
-        H = read_transform_config(config_path)
+        self.H = read_transform_config(config_path)
 
         # Returns a function that converts pixel coordinates to surface coordinates using a fixed matrix 'H'
-        self.to_surface_coordinates = lambda u, v: to_surface_coordinates(u, v, H)
+        self.to_surface_coordinates = lambda u, v: to_surface_coordinates(u, v, self.H)
 
         # Define Quality of Service (QoS) for communication
         qos_profile = qos_profile_sensor_data  # Suitable for sensor data
@@ -83,6 +84,9 @@ class LineFollower(Node):
 
         # Publisher to send processed result images for visualization
         self.im_publisher = self.create_publisher(CompressedImage, '/result', qos_profile)
+
+
+        self.err_publisher = self.create_publisher(PoseStamped, '/errors', qos_profile)
 
         # Load the custom trained YOLO model
         self.model = self.load_model(model_path)
@@ -263,11 +267,22 @@ class LineFollower(Node):
         msg = to_detection3d_array(detections, timestamp_unix)
         self.detection3d_pub.publish(msg)
 
+        # FINAL PROJECT IMPLEMENTATION ----------------------
+        success, heading_err, waypoint_err = generate_errors(predictions, self.H)
+        if success:
+            pose_msg = np_to_pose(np.array([heading_err, waypoint_err, 0]), 0.0, timestamp=timestamp_unix)
+        else:
+            pose_msg = np_to_pose(np.array([np.nan, np.nan, 0]), 0.0, timestamp=timestamp_unix)
+
+        self.err_publisher.publish(pose_msg)
+        
+
         # Convert back to ROS2 Image and publish
         im_msg = np_to_compressedimage(cv2.cvtColor(plot, cv2.COLOR_BGR2RGB))
 
         # Publish predictions
         self.im_publisher.publish(im_msg)
+
 
 
 def main(args=None):

@@ -2,6 +2,7 @@
 import numpy as np
 import yaml
 import cv2
+from skimage import morphology
 
 def get_corners(cx, cy, win_w, win_h, image_w, image_h):
     # Calculate the search window coordinates, ensuring they are within image bounds
@@ -311,3 +312,81 @@ def display_distances(image, distance_dict):
     cv2.addWeighted(overlay, alpha, output, 1 - alpha, 0, output)
 
     return output
+
+def generate_errors(predictions, H, window_size=1.5,half_lane_width=.700):
+    name2id = {'left_lane':1, 'right_lane':2}
+
+
+    p = predictions[0].cpu()  # Get the first prediction (move to CPU)
+    all_boxes = p.boxes  # Access the bounding boxes
+    ids = all_boxes.cls.numpy()  # Class IDs for each detected object
+    confidences = all_boxes.conf.numpy()  # Confidence scores for each detection
+
+    masks = p.masks
+
+    if len(ids) == 0: return False, None, None
+
+    shape = masks.orig_shape
+    (height, width) = shape
+
+    # Each detected object has its own mask
+    data = masks.data.cpu().numpy()  # Shape: (N, W, H) — N = number of masks
+
+    
+    lane_classes = (name2id["left_lane"], name2id["right_lane"])   # {1,2}
+
+    # indices of all lane detection
+    lane_idxs   = np.where(np.isin(ids, lane_classes))[0]
+
+    # take highest confidence lane
+    best_idx    = lane_idxs[np.argmax(confidences[lane_idxs])]
+
+    # keep only the most confident masks
+    ids   = ids[[best_idx]]
+    data  = data[[best_idx]]
+
+    output = np.zeros(shape=(height,width), dtype=np.uint8)
+    for i, mask in enumerate(data):
+        # Resize the mask to match the original image size
+        mask = cv2.resize(mask, (width, height), interpolation=cv2.INTER_NEAREST)
+        skeleton = morphology.skeletonize(mask)
+        output[skeleton == 1] = ids[i]
+
+    # transform mask points into surface coordinates
+    v, u = np.where(output != 0)
+    x, y = to_surface_coordinates(u, v, H)
+
+    # define a window of interest in the surface coordinates
+    win_low_bound = x.min()
+    win_upp_bound = win_low_bound + window_size
+
+    win_mask = (x > win_low_bound) & (x < win_upp_bound)
+    x_filt = x[win_mask]
+    y_filt = y[win_mask]
+
+    if x_filt.size < 2 or y_filt.size < 2: # filtering may result in no useable points
+        return False, None, None
+
+    # fit a line through points
+    a, b = np.polyfit(y_filt, x_filt, 1)     # least-squares fit
+
+    # calculate normal to the fitted line
+    normal_start_x = 0.5 * (win_low_bound + win_upp_bound)
+    normal_start_y = (normal_start_x - b) / a
+    normal_start = np.array([normal_start_x,normal_start_y])
+
+    n = np.array([-1.0, a])
+    n /= np.linalg.norm(n)                      # unit length
+
+    # decide which way the normal line should go
+    waypoint_try1 = normal_start + half_lane_width * n
+    waypoint_try2 = normal_start + half_lane_width * (n * -1)
+    if abs(waypoint_try1[1]) < abs(waypoint_try2[1]):
+        waypoint = waypoint_try1
+    else:
+        waypoint = waypoint_try2
+
+    heading_err = -np.arctan(1/a)
+    waypoint_err = -waypoint[1]
+
+    return True, heading_err, waypoint_err
