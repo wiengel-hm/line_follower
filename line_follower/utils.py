@@ -276,8 +276,9 @@ def calculate_drive_waypoint(predictions, left_id = 1, right_id = 3):
   # the line we are following to the center of the screen to treat it like a
   # line follower. This fixed offset is assumed to be in the center of the
   # screen.  The right offset is negative since the offset is added
-  left_offset = center_screen_x
-  right_offset = -center_screen_x
+  off = 100
+  left_offset = center_screen_x - off
+  right_offset = -center_screen_x + off
 
 
   # get the list of right line and left line masks
