@@ -247,6 +247,53 @@ def get_onnx_boxes(predictions, objects_3d):
     else:
       return True, detections
 
+# unused in current iteration of code 
+def obj_detected(predictions):
+    person_detected = False
+    crosswalk_detected = False
+    pedcrossing_sign_detected = False
+
+    # Check if there are any predictions
+    if len(predictions) == 0:
+        return person_detected, crosswalk_detected, pedcrossing_sign_detected
+
+    # Get the first prediction result
+    result = predictions[0]
+    
+    # Extract class IDs from the prediction - FIXED for segmentation models
+    class_ids = []
+    
+    # Try different ways to access class IDs for segmentation models
+    if hasattr(result, 'class_ids') and result.class_ids is not None:
+        # Direct access to class_ids (for segmentation models)
+        if hasattr(result.class_ids, 'tolist'):
+            class_ids = result.class_ids.tolist()
+        elif isinstance(result.class_ids, (list, tuple)):
+            class_ids = list(result.class_ids)
+        else:
+            class_ids = [result.class_ids]
+    elif hasattr(result, 'boxes') and result.boxes is not None:
+        # Fallback for detection models
+        if hasattr(result.boxes, 'cls'):
+            class_ids = result.boxes.cls.int().tolist()
+
+    # Define class IDs (these should match your model's class mapping)
+    PERSON_ID = 3  
+    CROSSWALK_ID = 0
+    PEDCROSSING_ID = 2
+
+    # Check for detections
+    if PERSON_ID in class_ids:
+        person_detected = True
+    
+    if CROSSWALK_ID in class_ids:
+        crosswalk_detected = True
+    
+    if PEDCROSSING_ID in class_ids:
+        pedcrossing_sign_detected = True
+
+    return person_detected, crosswalk_detected, pedcrossing_sign_detected
+
 def pixels_in_box(pixels, corners):
     """
     Returns a boolean mask for which pixels fall inside a given 2D bounding box.
