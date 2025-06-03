@@ -8,7 +8,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data  # Quality of Service settings for real-time data
 from rclpy.qos import QoSProfile, QoSDurabilityPolicy
-from sensor_msgs.msg import Image, LaserScan
+from sensor_msgs.msg import Image, LaserScan, CompressedImage
 from vision_msgs.msg import Detection3DArray, LabelInfo
 from geometry_msgs.msg import PoseStamped
 from ament_index_python.packages import get_package_share_directory, get_package_prefix
@@ -16,11 +16,10 @@ from ament_index_python.packages import get_package_share_directory, get_package
 # Project-Specific Imports
 from line_follower.utils import (
     to_surface_coordinates, read_transform_config, parse_predictions,
-    get_base, detect_bbox_center, draw_circle,
-    get_onnx_boxes, pixels_in_box, display_distances
+    get_base, draw_circle, get_bounding_boxes, pixels_in_box, display_distances
 )
-from ros2_numpy import image_to_np, np_to_image, np_to_image, scan_to_np, to_detection3d_array, to_label_info
-from yolo_onnx_runner import YOLO # pip install git+https://github.com/william-mx/yolo-onnx-runner.git
+from ros2_numpy import image_to_np, np_to_compressedimage, scan_to_np, to_detection3d_array, to_label_info
+from ultralytics import YOLO
 from line_follower.fusion import LidarToImageProjector
 
 class LineFollower(Node):
@@ -83,10 +82,10 @@ class LineFollower(Node):
         )
 
         # Publisher to send processed result images for visualization
-        self.im_publisher = self.create_publisher(Image, '/result', qos_profile)
+        self.im_publisher = self.create_publisher(CompressedImage, '/result', qos_profile)
 
         # Load the custom trained YOLO model
-        self.model = YOLO(model_path, conf_thres=0.1)
+        self.model = self.load_model(model_path)
 
         # Map class IDs to labels and labels to IDs
         self.id2label = self.model.names # {0: 'car', 1: 'center', ...}
@@ -132,8 +131,21 @@ class LineFollower(Node):
         self.projector = LidarToImageProjector()
 
         # Log an informational message indicating that the Line Tracker Node has started
-        self.get_logger().info("Line Tracker Node started. Custom YOLO ONNX model loaded successfully.")
+        self.get_logger().info("Line Tracker Node started. Custom YOLO model loaded successfully.")
 
+    def load_model(self, filepath):
+        model = YOLO(filepath)
+
+        self.imgsz = model.args['imgsz'] # Get the image size (imgsz) the loaded model was trained on.
+
+        # Init model
+        print("Initializing the model with a dummy input...")
+        im = np.zeros((self.imgsz, self.imgsz, 3)) # dummy image
+        _ = model.predict(im, verbose = False)  
+        print("Model initialization complete.")
+
+        return model
+    
     def scan_callback(self, msg):
         # Convert the incoming LiDAR scan message to NumPy format (x, y, intensity)
         xyi, timestamp_unix = scan_to_np(msg)
@@ -167,7 +179,7 @@ class LineFollower(Node):
         Detect tall objects like cars or signs using LiDAR projected into the camera image.
         Good for 3D objects that can be hit by the LiDAR beam. """
 
-        success, boxes = get_onnx_boxes(predictions, self.objects_3d)
+        success, boxes = get_bounding_boxes(predictions, self.objects_3d)
         
         # Proceed only if an object was successfully detected
         # and LiDAR data has been received
@@ -252,7 +264,7 @@ class LineFollower(Node):
         self.detection3d_pub.publish(msg)
 
         # Convert back to ROS2 Image and publish
-        im_msg = np_to_image(cv2.cvtColor(plot, cv2.COLOR_BGR2RGB))
+        im_msg = np_to_compressedimage(cv2.cvtColor(plot, cv2.COLOR_BGR2RGB))
 
         # Publish predictions
         self.im_publisher.publish(im_msg)
@@ -265,7 +277,7 @@ def main(args=None):
 
     # Path to your custom trained YOLO model
     pkg_path = get_package_prefix('line_follower').replace('install', 'src') # /mxck2_ws/install/line_follower → /mxck2_ws/src/line_follower
-    model_path = pkg_path + '/models/best.onnx'
+    model_path = pkg_path + '/models/best.pt'
             
     rclpy.init(args=args)
     node = LineFollower(model_path, config_path)
