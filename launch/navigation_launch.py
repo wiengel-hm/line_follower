@@ -11,10 +11,10 @@ def generate_launch_description():
     # Define a substitution that reads the 'ROBOT_NAMESPACE' environment variable.
     # If the environment variable is not set, it defaults to an empty string (global namespace).
     robot_namespace_env = EnvironmentVariable('ROBOT_NAMESPACE', default_value = '')
-    ball_follower_pkg = FindPackageShare("rocket_league")
+    ball_follower_pkg = FindPackageShare("line_follower")
 
     navigation = launch_ros.actions.Node(
-        package='rocket_league',
+        package='line_follower',
         executable='navigation',
         name='navigation',
         namespace=robot_namespace_env,

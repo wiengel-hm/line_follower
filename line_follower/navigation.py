@@ -17,7 +17,7 @@ from nav_msgs.msg import Path
 from rclpy.qos import qos_profile_sensor_data  # Quality of Service settings for real-time data
 # from smart_parking.utils import get_mapping, replay_bagfile
 
-from odometry.call_service import call_reset_odometry_service  
+# from odometry.call_service import call_reset_odometry_service  
 
 ''' NavigationNode Summary
 
@@ -305,7 +305,7 @@ def main(args=None):
     rclpy.init(args=args)
 
     # Not sure if below line is necessary
-    pkg_dir = get_package_prefix('rocket_league').replace('install', 'src') #  /mxck2_ws/install/smart_parking → /mxck2_ws/src/smart_parking
+    pkg_dir = get_package_prefix('line_follower').replace('install', 'src') #  /mxck2_ws/install/smart_parking → /mxck2_ws/src/smart_parking
     
     # NEED TO INSERT BAGFILE PATH HERE FOR TEST
     bagfile_path = pkg_dir + '/bagfiles/'

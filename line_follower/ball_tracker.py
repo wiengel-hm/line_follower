@@ -9,7 +9,7 @@ from sensor_msgs.msg import Image
 from geometry_msgs.msg import PoseStamped
 from ament_index_python.packages import get_package_share_directory, get_package_prefix
 
-from rocket_league.utils import (
+from line_follower.utils import (
     to_surface_coordinates,
     read_transform_config,
     # ──────────────────────────────────────────────────────────────────────────
@@ -59,11 +59,7 @@ class BallTracker(Node):
         # Original line (wrong):   self.model = YOLO(model_path, 'detectt')
         #
         # New:
-        self.model = YOLO(
-            model_path,
-            conf_thres=0.25,   # must be a float, not a string
-            iou_thres=0.45     # likewise, a float
-        )
+        self.model = self.load_model(model_path)
         # ──────────────────────────────────────────────────────────────────────────
 
         # figure out the class‐ID for your target labels
@@ -74,6 +70,20 @@ class BallTracker(Node):
         self.id2target = {cid: lbl for cid, lbl in id2label.items() if lbl in targets}
 
         self.get_logger().info("Ball Tracker Node started. YOLO segmentation model loaded.")
+
+
+    def load_model(self, filepath):
+        model = YOLO(filepath)
+
+        self.imgsz = model.args['imgsz'] # Get the image size (imgsz) the loaded model was trained on.
+
+        # Init model
+        print("Initializing the model with a dummy input...")
+        im = np.zeros((self.imgsz, self.imgsz, 3)) # dummy image
+        _ = model.predict(im, verbose = False)  
+        print("Model initialization complete.")
+
+        return model
 
     def image_callback(self, msg: Image):
         # 1) Convert ROS Image → NumPy BGR image + grab timestamp
@@ -96,9 +106,8 @@ class BallTracker(Node):
         # 4) Convert annotated BGR → RGB and publish as sensor_msgs/Image on /result
         annotated_rgb = cv2.cvtColor(annotated_bgr, cv2.COLOR_BGR2RGB)
         img_msg = np_to_image(annotated_rgb)      # ros2_numpy helper
-        img_msg.header.stamp = msg.header.stamp
         self.im_pub.publish(img_msg)
-
+        return
         # ──────────────────────────────────────────────────────────────────────────
         # 5) “Waypoint” logic: use parse_predictions to get mask for “ball” (ID=0)
         ball_id = next((cid for cid, lbl in self.id2target.items() if lbl == 'ball'), None)
@@ -147,9 +156,9 @@ class BallTracker(Node):
 def main(args=None):
     rclpy.init(args=args)
 
-    cfg = get_package_share_directory('rocket_league') + '/config/transform_config_640x360.yaml'
-    pkg = get_package_prefix('rocket_league').replace('install', 'src')
-    model = pkg + '/models/best.onnx'  # ─── point at your segmentation ONNX here
+    cfg = get_package_share_directory('line_follower') + '/config/transform_config_640x360.yaml'
+    pkg = get_package_prefix('line_follower').replace('install', 'src')
+    model = pkg + '/models/best.pt'  # ─── point at your segmentation ONNX here
 
     node = BallTracker(model, cfg)
     rclpy.spin(node)

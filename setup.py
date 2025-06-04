@@ -23,8 +23,8 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'ball_tracker = rocket_league.ball_tracker:main',
-            'navigation = rocket_league.navigation:main'
+            'ball_tracker = line_follower.ball_tracker:main',
+            'navigation = line_follower.navigation:main'
         ],
     },
 )
